@@ -323,8 +323,11 @@ INDEX_TEMPLATE = """
 <body>
     <div class="header">
         <span class="logo">
+            
             <img src="{{ url_for('static', filename='logo_128.png') }}" height="128" width="128" style="margin-right:16px;"/>
+            
             Blitter
+
             <span class="site-info">
                 <span class="nickname" style="font-family: 'Courier New', Courier, monospace; color: #ff9900;">
                     {{ profile.nickname }}
@@ -333,6 +336,7 @@ INDEX_TEMPLATE = """
                     <span class="location">({{ profile.location }})</span>
                 {% endif %}
             </span>
+            
         </span>
         <span class="controls">
             {% if logged_in %}
