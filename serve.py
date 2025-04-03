@@ -336,7 +336,7 @@ INDEX_TEMPLATE = """
                     <span class="location">({{ profile.location }})</span>
                 {% endif %}
             </span>
-            
+
         </span>
         <span class="controls">
             {% if logged_in %}
@@ -497,6 +497,17 @@ def logout():
     """Logout route."""
     session.pop('logged_in', None)
     return redirect(url_for('index'))
+
+@app.route('/about')
+def about():
+    """About route (public profile page)"""
+    profile_data = load_json(PROFILE_FILE)
+    about_profile = []
+    about_profile.append(f'{SITE_NAME}.onion')
+    about_profile.append(f'nickname: {profile_data.get('nickname')}')
+    about_profile.append(f'Loc: {profile_data.get('location')}')
+    about_profile.append(f'Desc: {profile_data.get('description')}')
+    return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/profile', methods=['GET', 'POST'])
 def profile():
