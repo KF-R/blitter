@@ -30,7 +30,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.2'
+APP_VERSION = '0.1.3'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -502,8 +502,7 @@ INDEX_TEMPLATE = """
                     {% endif %}
                      | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
                 </div>
-                <div class="post-content">{{ post.display_content }}</div> {# Use pre-escaped content #}
-            </div>
+                <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div> {# Render markdown as HTML #}            </div>
             {% else %}
             <p>No posts yet.</p>
             {% endfor %}
@@ -515,16 +514,15 @@ INDEX_TEMPLATE = """
 
              {% for sub_post in subscription_feed %}
              <div class="post-box">
-                 <div class="post-meta">
-                     <span class="subscription-site-name">{{ sub_post.site }}.onion</span> <br>
-                     {{ sub_post.display_timestamp }}
-                     {% if sub_post.reply_id and sub_post.reply_id != '0'*57 + ':' + '0'*16 %}
-                      | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ sub_post.reply_id }}</a>
-                     {% endif %}
-                      | <a href="http://{{ sub_post.site }}.onion/{{ sub_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
-                 </div>
-                 <div class="post-content">{{ sub_post.display_content }}</div> {# Use pre-escaped content #}
-             </div>
+                <div class="post-meta">
+                    <span class="subscription-site-name">{{ sub_post.site }}.onion</span> <br>
+                    {{ sub_post.display_timestamp }}
+                    {% if sub_post.reply_id and sub_post.reply_id != '0'*57 + ':' + '0'*16 %}
+                    | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ sub_post.reply_id }}</a>
+                    {% endif %}
+                    | <a href="http://{{ sub_post.site }}.onion/{{ sub_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
+                </div>
+                <div class="post-content">{{ bmd2html(sub_post.display_content) | safe }}</div> {# Render markdown as HTML #}             </div>
              {% else %}
              <p>No messages found in subscription caches.</p>
              {% if subscriptions %}
@@ -701,7 +699,8 @@ def index():
         app_version=APP_VERSION,
         subscriptions=subscription_dirs, # Pass directory names
         profile=profile_data,
-        MAX_MSG_LENGTH=MAX_MSG_LENGTH # Pass max length to template
+        MAX_MSG_LENGTH=MAX_MSG_LENGTH, # Pass max length to template
+        bmd2html=bmd2html
     )
 
 @app.route('/login', methods=['GET', 'POST'])
