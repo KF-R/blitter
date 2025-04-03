@@ -288,6 +288,8 @@ PROFILE_TEMPLATE = """
     Location: <input type="text" name="location" value="{{ profile.get('location', '') }}"><br>
     Description:<br>
     <textarea name="description" rows="4" cols="50">{{ profile.get('description', '') }}</textarea><br>
+    Email: <input type="text" name="email" value="{{ profile.get('email', '') }}"><br>
+    Website: <input type="text" name="website" value="{{ profile.get('website', '') }}"><br>
     <input type="submit" value="Update Profile">
   </form>
 </body>
@@ -395,7 +397,7 @@ INDEX_TEMPLATE = """
              <h4>Subscribed Sites:</h4>
              <ul>
                  {% for sub in subscriptions %}
-                     <li>{{ sub }}</li>
+                     <li>{{ sub }}.onion</li>
                  {% else %}
                      <li>No subscriptions added yet.</li>
                  {% endfor %}
@@ -518,6 +520,8 @@ def about():
     about_profile.append(f'nickname: {profile_data.get("nickname")}')
     about_profile.append(f'Loc: {profile_data.get("location")}')
     about_profile.append(f'Desc: {profile_data.get("description")}')
+    about_profile.append(f'Email: {profile_data.get("email")}')
+    about_profile.append(f'Website: {profile_data.get("website")}')
     return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/profile', methods=['GET', 'POST'])
@@ -532,6 +536,9 @@ def profile():
         profile_data['nickname'] = request.form.get('nickname', profile_data.get('nickname'))
         profile_data['location'] = request.form.get('location', profile_data.get('location'))
         profile_data['description'] = request.form.get('description', profile_data.get('description'))
+        profile_data['email'] = request.form.get('email', profile_data.get('email'))
+        profile_data['website'] = request.form.get('website', profile_data.get('website'))
+
         save_json(PROFILE_FILE, profile_data)
         return redirect(url_for('profile'))
 
@@ -609,11 +616,15 @@ def add_subscription():
         abort(403)
     # Get the submitted onion address from the form
     onion_input = request.form.get('onion_address', '').strip().lower()
+    onion_input = onion_input.replace("http://","").replace("https://","")
+    onion_input = onion_input.replace("/","")
     if not onion_input:
         return "No .onion address provided.", 400
     # Automatically append '.onion' if missing
     if not onion_input.endswith('.onion'):
         onion_input += '.onion'
+
+    # TODO: Validate onion address before attempting fetch
     
     # Attempt to fetch the remote site's /about endpoint via Tor's SOCKS proxy
     try:
@@ -623,7 +634,7 @@ def add_subscription():
             "https": "socks5h://127.0.0.1:9050"
         }
         about_url = f"http://{onion_input}/about"
-        r = requests.get(about_url, proxies=proxies, timeout=5)
+        r = requests.get(about_url, proxies=proxies, timeout=30)
         if r.status_code != 200:
             return f"Failed to fetch /about from {onion_input}. Status code: {r.status_code}", 400
         about_text = r.text.strip()
@@ -634,10 +645,12 @@ def add_subscription():
         #   line 2: nickname: <nickname>
         #   line 3: Loc: <location>
         #   line 4: Desc: <description>
+        #   line 5: Email: <description>
+        #   line 6: Website: <description>
         lines = about_text.splitlines()
-        if len(lines) < 3:
+        if len(lines) < 4:
             return f"/about response from {onion_input} does not contain enough information.", 400
-        # Extract the nickname (from line 2) and location (from line 3)
+        # Extract the information
         if "nickname:" in lines[1].lower():
             nickname = lines[1].split(":", 1)[1].strip()
         else:
@@ -646,6 +659,18 @@ def add_subscription():
             location = lines[2].split(":", 1)[1].strip()
         else:
             location = ""
+        if "desc:" in lines[3].lower():
+            description = lines[3].split(":", 1)[1].strip()
+        else:
+            description = ""            
+        if "email:" in lines[4].lower():
+            email = lines[4].split(":", 1)[1].strip()
+        else:
+            email = ""
+        if "website:" in lines[5].lower():
+            website = lines[5].split(":", 1)[1].strip()
+        else:
+            website = ""
     except Exception as e:
         return f"Error fetching /about from {onion_input}: {str(e)}", 400
 
@@ -659,7 +684,7 @@ def add_subscription():
 
     # Create the notes.json file to cache the site's nickname and location
     notes_file = os.path.join(subscription_dir, "notes.json")
-    notes_data = {"nickname": nickname, "location": location}
+    notes_data = {"nickname": nickname, "location": location, "description": description, "email": email, "website": website}
     try:
         save_json(notes_file, notes_data)
     except Exception as e:
@@ -684,7 +709,7 @@ def initialize_app():
           "nickname": "User",
           "passphrase": "change_this_password",
           "location": "", "description": "My Blitter profile.",
-          "profile_picture": None, "custom_background_image": None, "email": None
+          "profile_picture": None, "custom_background_image": None, "email": None, "website": None
         })
     else:
          print(f"Profile file found: {PROFILE_FILE}")
