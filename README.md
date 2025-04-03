@@ -8,6 +8,11 @@ Each Blitter site/user instance also maintains its own list of Blitter sites, su
 
 ...
 
+## Installation Requirements:
+```
+sudo apt install tor
+pip install stem Flask requests[socks]
+```
 
 ## Community & Contribution
 Blitter thrives on community collaboration. We welcome developers, security researchers, and privacy advocates to contribute to the evolution of this platform.
