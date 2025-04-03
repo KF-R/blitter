@@ -13,7 +13,7 @@ import threading # Added for background task feedback (optional)
 import shutil # Added for directory removal
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
-
+import re # Added for parsing markdown
 
 # --- Tor Integration Imports ---
 try:
@@ -30,7 +30,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.1'
+APP_VERSION = '0.1.2'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -55,6 +55,41 @@ fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5) # Executor
 active_fetches = {} # Track active fetch tasks (optional for status)
 
 # --- Helper Functions ---
+
+def bmd2html(bmd_string):
+    """Converts a Blitter Markdown string to valid html"""
+
+    html_string = bmd_string
+
+    # Convert [text](url) to <a href="url" target="_blank">text</a>
+    html_string = re.sub(
+        r'\[([^\]]+)\]\(([^)]+)\)',
+        r'<a href="\2" target="_blank">\1</a>',
+        html_string
+    )
+
+    # Convert ***text*** to <strong><em>text</em></strong>
+    html_string = re.sub(
+        r'\*\*\*([^\*]+)\*\*\*',
+        r'<strong><em>\1</em></strong>',
+        html_string
+    )
+
+    # Convert **text** to <strong>text</strong>
+    html_string = re.sub(
+        r'\*\*([^\*]+)\*\*',
+        r'<strong>\1</strong>',
+        html_string
+    )
+
+    # Convert *text* to <em>text</em>
+    html_string = re.sub(
+        r'\*([^\*]+)\*',
+        r'<em>\1</em>',
+        html_string
+    )
+
+    return html_string
 
 def load_json(filename):
     """Loads JSON data from a file."""
@@ -451,8 +486,8 @@ INDEX_TEMPLATE = """
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                  <textarea name="content" rows="3" placeholder="What's happening? ({{ MAX_MSG_LENGTH }} chars max)" maxlength="{{ MAX_MSG_LENGTH }}" required></textarea><br>
-                 <input type="submit" value="Post" style="margin: 10px;">
-                 <span style="font-size: 0.8em; margin-left: 10px;">Printable ASCII only.</span>
+                 <input type="submit" value="Post" style="margin: 5px;">
+                 <span style="font-size: 0.8em; margin-left: 10px;"> Max 500 chars. Markdown: *italic*, **bold**, [link](url) </span>
             </form>
             {% else %}
             <p><i>You must <a href="{{ url_for('login')}}">login</a> to post.</i></p>
@@ -474,7 +509,7 @@ INDEX_TEMPLATE = """
             {% endfor %}
         </div>
 
-        {# --- SUBSCRIPTIONS PANEL - NOW VISIBLE TO ALL --- #}
+        {# --- SUBSCRIPTIONS PANEL --- #}
         <div class="subscriptions-panel">
             <h2>Subscriptions</h2>
 
