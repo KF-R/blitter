@@ -322,11 +322,11 @@ INDEX_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-         <span class="logo">Blitter</span>
+        <span class="logo"><img src="{{ url_for('static', filename='logo_128.png') }}" height="128" width="128" style="margin-right:16px;"/>Blitter</span>
         <span class="controls">
             {% if logged_in %}
                 <a href="{{ url_for('profile') }}">Profile</a> |
-                <button disabled title="Refresh subscriptions (Not Implemented)">Refresh</button> |
+                <button disabled title="Fetch subscriptions (Not Implemented)">Fetch</button> |
                 <button disabled title="Add subscription (Not Implemented)">Add</button> |
                 <a href="{{ url_for('logout') }}">Logout</a>
             {% else %}
@@ -335,6 +335,7 @@ INDEX_TEMPLATE = """
         </span>
         <div class="site-name">
              {{ onion_address or site_name }}<br>
+             <span style="margin-right:20px;">nickname</span>
              <span style="font-size: 0.8em;">{{ utc_time }}</span>
         </div>
     </div>
