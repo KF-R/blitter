@@ -30,6 +30,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
+APP_VERSION = '0.1.1'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -154,7 +155,7 @@ def parse_message_string(msg_str):
     }
 
 def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
-    """Creates a message string in the new variable-width ASCII format:
+    """Creates a message string:
     |<protocol_version>|<sitename>|<timestamp>|<reply-id>|<expiration>|<flag_int>|<len>|<content>|
     """
     global SITE_NAME, PROTOCOL_VERSION # Use the globally set values
@@ -389,8 +390,8 @@ INDEX_TEMPLATE = """
         .header .site-name { text-align: center; font-size: 1.1em; margin: 0 150px; line-height: 1.5em; }
         .header .controls { float: right; }
         .content { display: flex; flex-wrap: wrap; padding: 10px; }
-        .feed-panel { flex: 2; min-width: 300px; margin-right: 10px; margin-bottom: 10px; }
-        .subscriptions-panel { flex: 1; min-width: 250px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
+        .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
+        .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
         .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 15px; background-color: #2a2a2a; border-radius: 5px;}
         .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
         .post-meta a { color: #aaa; }
@@ -450,7 +451,7 @@ INDEX_TEMPLATE = """
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                  <textarea name="content" rows="3" placeholder="What's happening? ({{ MAX_MSG_LENGTH }} chars max)" maxlength="{{ MAX_MSG_LENGTH }}" required></textarea><br>
-                 <input type="submit" value="Post">
+                 <input type="submit" value="Post" style="margin: 10px;">
                  <span style="font-size: 0.8em; margin-left: 10px;">Printable ASCII only.</span>
             </form>
             {% else %}
@@ -518,14 +519,14 @@ INDEX_TEMPLATE = """
     </div> {# --- END CONTENT --- #}
 
     <div class="footer">
-        <p style="text-align: center; font-size: 0.8em;">Blitter Node | Protocol v{{ protocol_version }}</p>
+        <p style="text-align: center; font-size: 0.8em;">Blitter Node v{{ app_version }} | Protocol v{{ protocol_version }}</p>
     </div>
 
-    {# --- MODALS (STILL NEED LOGIN CHECK FOR ADD BUTTON) --- #}
-    <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000;">
+    {# --- MODALS --- #}
+    <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:460px;">
       <form method="post" action="{{ url_for('add_subscription') }}">
         <label for="onion_address" style="color:#eee;">Enter .onion address:</label><br>
-        <input type="text" name="onion_address" id="onion_address" required pattern="[a-z2-7]{56}(\.onion)?" title="Enter a valid v3 Onion address (56 characters, optionally ending in .onion)">
+        <input type="text" name="onion_address" id="onion_address" required pattern="^(https?:\\/\\/)?[a-z2-7]{56}(?:\\.onion)?\\/?$" title="Enter a valid v3 Onion address (56 characters, optionally starting with http:// or https://, optionally ending with .onion, and optionally a trailing slash)" style="width: 440px;">
         <br><br>
         <input type="submit" value="Add Subscription">
         <button type="button" onclick="document.getElementById('add-subscription-modal').style.display='none';">Cancel</button>
@@ -582,7 +583,7 @@ INDEX_TEMPLATE = """
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
-                            alert(`Subscription for ${siteOnion} removed.`);
+                            // alert(`Subscription for ${siteOnion} removed.`);
                             // Refresh page to reflect removal
                             window.location.reload();
                         } else {
@@ -662,6 +663,7 @@ def index():
         onion_address=onion_address,
         utc_time=utc_now,
         protocol_version=PROTOCOL_VERSION,
+        app_version=APP_VERSION,
         subscriptions=subscription_dirs, # Pass directory names
         profile=profile_data,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH # Pass max length to template
@@ -877,8 +879,8 @@ def add_subscription():
          return f"Error: Invalid v3 onion address format: {escape(onion_input)}", 400
 
     # Prevent subscribing to self
-    if dir_name == SITE_NAME:
-         return "Error: Cannot subscribe to your own site.", 400
+    # if dir_name == SITE_NAME:
+    #      return "Error: Cannot subscribe to your own site.", 400
 
     # Check if already subscribed
     subscription_dir = os.path.join(SUBSCRIPTIONS_DIR, dir_name)
