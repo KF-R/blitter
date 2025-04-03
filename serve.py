@@ -3,12 +3,13 @@ import os
 import json
 import time
 import datetime
-import sys # Added for stderr
-import base64 # Added for key encoding
-import atexit # Added for cleanup
+import sys  # Added for stderr
+import base64  # Added for key encoding
+import atexit  # Added for cleanup
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
 import string
+
 # --- Tor Integration Imports ---
 try:
     from stem.control import Controller
@@ -18,7 +19,6 @@ except ImportError:
     STEM_AVAILABLE = False
     print("Warning: 'stem' library not found. Tor integration will be disabled.", file=sys.stderr)
     print("Install it using: pip install stem", file=sys.stderr)
-
 
 app = Flask(__name__)
 # Secret key for session management (replace with a real secret key in production)
@@ -31,19 +31,18 @@ SUBSCRIPTIONS_DIR = 'subscriptions'
 KEYS_DIR = 'keys'
 LOG_DIR = 'log'
 ONION_PORT = 80  # Virtual port the onion service will listen on
-FLASK_HOST = "127.0.0.1" # Host Flask should listen on for Tor
-FLASK_PORT = 5000 # Port Flask should listen on for Tor
+FLASK_HOST = "127.0.0.1"  # Host Flask should listen on for Tor
+FLASK_PORT = 5000  # Port Flask should listen on for Tor
 MAX_MSG_LENGTH = 512
 
 # --- Global Variables ---
 # SITE_NAME will be updated by Tor setup if successful
-SITE_NAME = "tor_setup_pending" # Placeholder until Tor setup
+SITE_NAME = "tor_setup_pending"  # Placeholder until Tor setup
 PROTOCOL_VERSION = "0001"
 # --- Tor Globals ---
 tor_controller = None
 tor_service_id = None
 onion_address = None
-
 
 # --- Helper Functions ---
 
@@ -54,7 +53,7 @@ def load_json(filename):
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         print(f"Warning: Could not load or decode JSON from {filename}", file=sys.stderr)
-        return {} # Return empty dict or appropriate default
+        return {}  # Return empty dict or appropriate default
 
 def save_json(filename, data):
     """Saves JSON data to a file."""
@@ -63,7 +62,6 @@ def save_json(filename, data):
             json.dump(data, f, indent=2)
     except IOError as e:
         print(f"Error: Could not write JSON to {filename}: {e}", file=sys.stderr)
-
 
 def is_logged_in():
     """Checks if the user is logged in via session."""
@@ -93,16 +91,16 @@ def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
     """Creates a message string in the new variable-width ASCII format:
     |<protocol_version>|<sitename>|<timestamp>|<reply-id>|<expiration>|<flag_int>|<len>|<content>|
     """
-    global SITE_NAME # Use the globally set SITE_NAME (hopefully from Tor)
+    global SITE_NAME  # Use the globally set SITE_NAME (hopefully from Tor)
     timestamp = get_current_timestamp_hex()
     # Filter content to include only printable ASCII (no padding needed)
     printable_content = ''.join(filter(lambda x: x in string.printable, content))
-    expiration = 'f'*16 # Placeholder for expiration (max value)
-    flag_int = '0'*16   # Placeholder for flags
+    expiration = 'f'*16  # Placeholder for expiration (max value)
+    flag_int = '0'*16    # Placeholder for flags
 
     # Validate reply_id format (basic check)
     if not (isinstance(reply_id, str) and len(reply_id) == 74 and reply_id.count(':') == 1):
-         reply_id = '0'*57 + ':' + '0'*16 # Default if invalid
+         reply_id = '0'*57 + ':' + '0'*16  # Default if invalid
 
     # Calculate the length of the content in bytes (as ASCII)
     content_length = len(printable_content.encode('ascii'))
@@ -114,7 +112,6 @@ def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
     message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{printable_content}|"
     return message, timestamp
 
-
 # --- Tor Integration Functions ---
 
 def find_first_onion_service_dir(keys_dir):
@@ -123,7 +120,7 @@ def find_first_onion_service_dir(keys_dir):
         print(f"Error: Keys directory '{keys_dir}' not found.", file=sys.stderr)
         return None
 
-    for item in sorted(os.listdir(keys_dir)): # Sort for predictable behaviour
+    for item in sorted(os.listdir(keys_dir)):  # Sort for predictable behaviour
         service_dir = os.path.join(keys_dir, item)
         key_file = os.path.join(service_dir, "hs_ed25519_secret_key")
         if os.path.isdir(service_dir) and os.path.isfile(key_file):
@@ -214,8 +211,10 @@ def start_tor_hidden_service(key_blob_with_type):
          print("Ensure Tor is running with ControlPort 9051 enabled and accessible.", file=sys.stderr)
          print("Check Tor logs for more details.", file=sys.stderr)
          if tor_controller:
-             try: tor_controller.close()
-             except: pass
+             try: 
+                 tor_controller.close()
+             except:
+                 pass
          tor_controller = None
          return False
     except Exception as e:
@@ -223,8 +222,10 @@ def start_tor_hidden_service(key_blob_with_type):
         print("Ensure Tor is running with ControlPort enabled (e.g., ControlPort 9051) and", file=sys.stderr)
         print("CookieAuthentication is enabled (CookieAuthentication 1).", file=sys.stderr)
         if tor_controller:
-            try: tor_controller.close()
-            except: pass
+            try: 
+                tor_controller.close()
+            except:
+                pass
         tor_controller = None
         return False
 
@@ -256,7 +257,6 @@ def cleanup_tor_service():
             tor_service_id = None
     elif tor_service_id:
         print(f"\nWarning: Tor controller not available for cleanup of service {tor_service_id}. Service might persist.", file=sys.stderr)
-
 
 # --- HTML Templates (simplified) ---
 
@@ -323,11 +323,8 @@ INDEX_TEMPLATE = """
 <body>
     <div class="header">
         <span class="logo">
-            
             <img src="{{ url_for('static', filename='logo_128.png') }}" height="128" width="128" style="margin-right:16px;"/>
-            
             Blitter
-
             <span class="site-info">
                 <span class="nickname" style="font-family: 'Courier New', Courier, monospace; color: #ff9900;">
                     {{ profile.nickname }}
@@ -336,13 +333,12 @@ INDEX_TEMPLATE = """
                     <span class="location">({{ profile.location }})</span>
                 {% endif %}
             </span>
-
         </span>
         <span class="controls">
             {% if logged_in %}
                 <a href="{{ url_for('profile') }}">Profile</a> |
                 <button disabled title="Fetch subscriptions (Not Implemented)">Fetch</button> |
-                <button disabled title="Add subscription (Not Implemented)">Add</button> |
+                <button id="add-subscription-btn" title="Add subscription">Add</button> |
                 <a href="{{ url_for('logout') }}">Logout</a>
             {% else %}
                 <a href="{{ url_for('login') }}">Login</a>
@@ -411,6 +407,21 @@ INDEX_TEMPLATE = """
         <p style="text-align: center; font-size: 0.8em;">Blitter Node | Protocol v{{ protocol_version }}</p>
     </div>
 
+    <!-- Modal for adding subscription -->
+    <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000;">
+      <form method="post" action="{{ url_for('add_subscription') }}">
+        <label for="onion_address" style="color:#eee;">Enter .onion address:</label><br>
+        <input type="text" name="onion_address" id="onion_address" required>
+        <br><br>
+        <input type="submit" value="Add Subscription">
+        <button type="button" onclick="document.getElementById('add-subscription-modal').style.display='none';">Cancel</button>
+      </form>
+    </div>
+    <script>
+      document.getElementById("add-subscription-btn").addEventListener("click", function() {
+        document.getElementById("add-subscription-modal").style.display = "block";
+      });
+    </script>
 </body>
 </html>
 """
@@ -422,7 +433,7 @@ def index():
     feed_data = load_json(FEED_FILE)
     processed_feed = []
     if isinstance(feed_data, list):
-         for msg_str in reversed(feed_data): # Newest first
+         for msg_str in reversed(feed_data):  # Newest first
             parts = msg_str.strip('|').split('|')
             if len(parts) == 8:
                  site = parts[1]
@@ -504,9 +515,9 @@ def about():
     profile_data = load_json(PROFILE_FILE)
     about_profile = []
     about_profile.append(f'{SITE_NAME}.onion')
-    about_profile.append(f'nickname: {profile_data.get('nickname')}')
-    about_profile.append(f'Loc: {profile_data.get('location')}')
-    about_profile.append(f'Desc: {profile_data.get('description')}')
+    about_profile.append(f'nickname: {profile_data.get("nickname")}')
+    about_profile.append(f'Loc: {profile_data.get("location")}')
+    about_profile.append(f'Desc: {profile_data.get("description")}')
     return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/profile', methods=['GET', 'POST'])
@@ -589,6 +600,72 @@ def view_message(timestamp):
              return msg_str, 200, {'Content-Type': 'text/plain; charset=ascii'}
 
     abort(404, description="Message not found for this site.")
+
+# --- New Route for Adding a Subscription ---
+
+@app.route('/add_subscription', methods=['POST'])
+def add_subscription():
+    if not is_logged_in():
+        abort(403)
+    # Get the submitted onion address from the form
+    onion_input = request.form.get('onion_address', '').strip().lower()
+    if not onion_input:
+        return "No .onion address provided.", 400
+    # Automatically append '.onion' if missing
+    if not onion_input.endswith('.onion'):
+        onion_input += '.onion'
+    
+    # Attempt to fetch the remote site's /about endpoint via Tor's SOCKS proxy
+    try:
+        import requests
+        proxies = {
+            "http": "socks5h://127.0.0.1:9050",
+            "https": "socks5h://127.0.0.1:9050"
+        }
+        about_url = f"http://{onion_input}/about"
+        r = requests.get(about_url, proxies=proxies, timeout=5)
+        if r.status_code != 200:
+            return f"Failed to fetch /about from {onion_input}. Status code: {r.status_code}", 400
+        about_text = r.text.strip()
+        if not about_text:
+            return f"/about endpoint from {onion_input} returned empty response.", 400
+        # Expected /about output:
+        #   line 1: <site_onion_address>
+        #   line 2: nickname: <nickname>
+        #   line 3: Loc: <location>
+        #   line 4: Desc: <description>
+        lines = about_text.splitlines()
+        if len(lines) < 3:
+            return f"/about response from {onion_input} does not contain enough information.", 400
+        # Extract the nickname (from line 2) and location (from line 3)
+        if "nickname:" in lines[1].lower():
+            nickname = lines[1].split(":", 1)[1].strip()
+        else:
+            nickname = ""
+        if "loc:" in lines[2].lower():
+            location = lines[2].split(":", 1)[1].strip()
+        else:
+            location = ""
+    except Exception as e:
+        return f"Error fetching /about from {onion_input}: {str(e)}", 400
+
+    # Use the onion address (without '.onion') as the directory name
+    dir_name = onion_input[:-6]
+    subscription_dir = os.path.join(SUBSCRIPTIONS_DIR, dir_name)
+    try:
+        os.makedirs(subscription_dir, exist_ok=True)
+    except Exception as e:
+        return f"Error creating subscription directory: {str(e)}", 500
+
+    # Create the notes.json file to cache the site's nickname and location
+    notes_file = os.path.join(subscription_dir, "notes.json")
+    notes_data = {"nickname": nickname, "location": location}
+    try:
+        save_json(notes_file, notes_data)
+    except Exception as e:
+        return f"Error saving notes.json: {str(e)}", 500
+
+    return redirect(url_for('index'))
 
 # --- Initialization and Tor Setup ---
 def initialize_app():
