@@ -322,7 +322,18 @@ INDEX_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <span class="logo"><img src="{{ url_for('static', filename='logo_128.png') }}" height="128" width="128" style="margin-right:16px;"/>Blitter</span>
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="128" width="128" style="margin-right:16px;"/>
+            Blitter
+            <span class="site-info">
+                <span class="nickname" style="font-family: 'Courier New', Courier, monospace; color: #ff9900;">
+                    {{ profile.nickname }}
+                </span>
+                {% if profile.location %} 
+                    <span class="location">({{ profile.location }})</span>
+                {% endif %}
+            </span>
+        </span>
         <span class="controls">
             {% if logged_in %}
                 <a href="{{ url_for('profile') }}">Profile</a> |
@@ -334,9 +345,8 @@ INDEX_TEMPLATE = """
             {% endif %}
         </span>
         <div class="site-name">
-             {{ onion_address or site_name }}<br>
-             <span style="margin-right:20px;">nickname</span>
-             <span style="font-size: 0.8em;">{{ utc_time }}</span>
+            {{ onion_address or site_name }}<br>
+            <span style="font-size: 0.8em;">{{ utc_time }}</span>
         </div>
     </div>
 
@@ -405,11 +415,9 @@ INDEX_TEMPLATE = """
 
 @app.route('/')
 def index():
-    """Main page route."""
     feed_data = load_json(FEED_FILE)
     processed_feed = []
     if isinstance(feed_data, list):
-         # Process feed data for display (parse messages, format timestamps)
          for msg_str in reversed(feed_data): # Newest first
             parts = msg_str.strip('|').split('|')
             if len(parts) == 8:
@@ -441,6 +449,9 @@ def index():
     except FileNotFoundError:
         sub_dirs = []
 
+    # Load profile data
+    profile_data = load_json(PROFILE_FILE)
+
     return render_template_string(
         INDEX_TEMPLATE,
         feed=processed_feed,
@@ -450,7 +461,8 @@ def index():
         utc_time=utc_now,
         protocol_version=PROTOCOL_VERSION,
         subscriptions=sub_dirs,
-        escape=escape
+        escape=escape,
+        profile=profile_data
     )
 
 @app.route('/login', methods=['GET', 'POST'])
