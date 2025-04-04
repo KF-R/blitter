@@ -30,7 +30,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.3'
+APP_VERSION = '0.1.4'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -482,7 +482,7 @@ INDEX_TEMPLATE = """
 
     <div class="content">
         <div class="feed-panel">
-            <h2>Your Feed</h2>
+            <h2><span class="nickname">{{ profile.nickname }}</span> Feed</h2>
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                  <textarea name="content" rows="3" placeholder="What's happening? ({{ MAX_MSG_LENGTH }} chars max)" maxlength="{{ MAX_MSG_LENGTH }}" required></textarea><br>
