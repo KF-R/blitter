@@ -31,7 +31,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.6'
+APP_VERSION = '0.1.7'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -481,7 +481,7 @@ INDEX_TEMPLATE = """
          a { color: #7af; text-decoration: none; }
          a:hover { text-decoration: underline; }
          .error { color: red; font-weight: bold; }
-         .site-info { margin-left: 10px; font-size: 0.9em; } /* Style for nickname/location */
+         .site-info { margin-left: 10px; font-size: 0.9em; } /* Style for location/description */
          .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
          .location { color: #ccc; }
          .subscription-site-name { font-weight: bold; color: #aaa; }
@@ -493,14 +493,6 @@ INDEX_TEMPLATE = """
         <span class="logo">
             <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
             Blitter
-            <span class="site-info">
-                <span class="nickname">
-                    {{ profile.nickname }}
-                </span>
-                {% if profile.location %}
-                    <span class="location">({{ profile.location }})</span>
-                {% endif %}
-            </span>
         </span>
         <span class="controls">
             {% if logged_in %}
@@ -509,11 +501,14 @@ INDEX_TEMPLATE = """
                 <button id="add-subscription-btn" title="Add subscription">Add</button> |
                 <a href="{{ url_for('logout') }}">Logout</a>
             {% else %}
-                <a href="{{ url_for('login') }}">Login</a>
+                {{profile.nickname}} <a href="{{ url_for('login') }}">login</a>
             {% endif %}
         </span>
         <div class="site-name">
-            {{ onion_address or site_name }}<br>
+            <span class="nickname"> {{ profile.nickname }}:</span>
+            <span id="site-name">{{ onion_address or site_name }}</span>
+            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
+            <br>
             <span style="font-size: 0.8em;">{{ utc_time }}</span>
         </div>
     </div>
@@ -527,6 +522,16 @@ INDEX_TEMPLATE = """
     <div class="content">
         <div class="feed-panel">
             <h2><span class="nickname">{{ profile.nickname }}</span> Feed</h2>
+            {% if profile.location %}
+                <span class="site-info">Location: <em>{{ profile.location }}</em></span>
+                <br/>
+            {% endif %}
+
+            {% if profile.description %}
+                <span class="site-info">Bio: {{ bmd2html(profile.description) }}</span>
+                <br/>
+            {% endif %}
+            <hr/>
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                 <textarea id="content" name="content" rows="3" placeholder="What's happening? 500 chars max)" maxlength="500" required></textarea><br>
@@ -534,8 +539,7 @@ INDEX_TEMPLATE = """
                 <span id="char-count" style="font-size: 0.8em; margin-left: 10px;">0 / 500</span>
                 <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
             </form>
-            {% else %}
-            <p><i>You must <a href="{{ url_for('login')}}">login</a> to post.</i></p>
+            <hr/>
             {% endif %}
 
             {% for post in feed %}
