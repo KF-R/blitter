@@ -31,7 +31,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.7'
+APP_VERSION = '0.1.8'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -71,7 +71,7 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
 
 def get_passphrase(service_dir, secret_word) -> string:
     """
-    Reads the last 64 bytes of the binary file, 
+    Reads the last 64 bytes of the binary file,
     combines it with the secret_word and computes the SHA-256 hash,
     truncates it to 66 bits (6 x 11 bits), and maps each 11-bit segment
     to a word in the BIP-0039 word list.
@@ -85,14 +85,14 @@ def get_passphrase(service_dir, secret_word) -> string:
     with open(key_file_path, "rb") as f:
         f.seek(-64, os.SEEK_END)
         payload = f.read(64)
-    
+
     # Compute SHA-256 hash and convert to an integer
     digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
     digest_int = int.from_bytes(digest, byteorder="big")
-    
+
     # Truncate the digest to the top 66 bits
     truncated = digest_int >> (256 - 66)
-    
+
     # Extract 6 segments of 11 bits each
     words = []
     for i in range(6):
@@ -141,9 +141,9 @@ def load_json(filename):
     try:
         with open(filename, 'r') as f:
             return json.load(f)
+    # Allow FileNotFoundError for notes.json as well
     except (FileNotFoundError, json.JSONDecodeError):
-        # Don't print warning for missing feedcache, it's expected
-        if 'feedcache.json' not in filename:
+        if 'feedcache.json' not in filename and 'notes.json' not in filename:
              print(f"Warning: Could not load or decode JSON from {filename}", file=sys.stderr)
         return None # Return None to distinguish from empty file
 
@@ -231,6 +231,7 @@ def parse_message_string(msg_str):
         'flags': flag_int,
         'len': length_field,
         'raw_message': msg_str # Keep the raw message string
+        # 'nickname' will be added later in the index function
     }
 
 def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
@@ -551,7 +552,8 @@ INDEX_TEMPLATE = """
                     {% endif %}
                      | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
                 </div>
-                <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div> {# Render markdown as HTML #}            </div>
+                <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div> {# Render markdown as HTML #}
+            </div>
             {% else %}
             <p>No posts yet.</p>
             {% endfor %}
@@ -564,14 +566,20 @@ INDEX_TEMPLATE = """
              {% for sub_post in subscription_feed %}
              <div class="post-box">
                 <div class="post-meta">
+                    {# --- Display Nickname if available --- #}
+                    {% if sub_post.nickname %}
+                        <span class="nickname">{{ sub_post.nickname }}: </span>
+                    {% endif %}
                     <span class="subscription-site-name">{{ sub_post.site }}.onion</span> <br>
+                    {# --- End Nickname Display --- #}
                     {{ sub_post.display_timestamp }}
                     {% if sub_post.reply_id and sub_post.reply_id != '0'*57 + ':' + '0'*16 %}
                     | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ sub_post.reply_id }}</a>
                     {% endif %}
                     | <a href="http://{{ sub_post.site }}.onion/{{ sub_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
                 </div>
-                <div class="post-content">{{ bmd2html(sub_post.display_content) | safe }}</div> {# Render markdown as HTML #}             </div>
+                <div class="post-content">{{ bmd2html(sub_post.display_content) | safe }}</div> {# Render markdown as HTML #}
+             </div>
              {% else %}
              <p>No messages found in subscription caches.</p>
              {% if subscriptions %}
@@ -585,11 +593,15 @@ INDEX_TEMPLATE = """
 
              <h4>Subscribed Sites:</h4>
              <ul id="subscription-list">
-                 {% for sub in subscriptions %}
+                 {% for sub in subscriptions %} 
                      <li>
-                        <a href="http://{{ sub }}.onion" target="_blank">{{ sub }}.onion</a>
+                        {% if sub.nickname %}
+                            <span class="nickname">{{ sub.nickname }}: </span>
+                        {% endif %}
+                        <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
                         {% if logged_in %}
-                            <a href="#" class="remove-link" data-site-dir="{{ sub }}" title="Remove subscription for {{ sub }}.onion">[Remove]</a>
+                            {# --- Use sub.site for data attribute --- #}
+                            <a href="#" class="remove-link" data-site-dir="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
                         {% endif %}
                      </li>
                  {% else %}
@@ -720,13 +732,30 @@ def index():
             # else: message parsing failed (already handled in parse_message_string)
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    subscription_dirs = []
-    subscription_feed = []
+
+    # --- Load subscription directories and their nicknames ---
+    subscriptions_with_nicknames = [] # List to hold {'site': site_dir, 'nickname': nickname}
+    subscription_feed = []            # List to hold parsed messages from caches
+    nicknames_map = {}                # Quick lookup map {site_dir: nickname}
+
     try:
         if os.path.isdir(SUBSCRIPTIONS_DIR):
-             # Sort directory names for consistent display order
-             subscription_dirs = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
-             for site_dir in subscription_dirs:
+             # Get sorted directory names first
+             subscription_dirs_list = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
+
+             for site_dir in subscription_dirs_list:
+                 # Load nickname from notes.json
+                 nickname = None # Default nickname
+                 notes_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'notes.json')
+                 notes_data = load_json(notes_file) # load_json handles FileNotFoundError
+                 if notes_data and isinstance(notes_data, dict) and notes_data.get('nickname'):
+                     nickname = notes_data['nickname']
+                 # Add to list for the static site list display
+                 subscriptions_with_nicknames.append({'site': site_dir, 'nickname': nickname})
+                 # Add to map for quick lookup when processing feed posts
+                 nicknames_map[site_dir] = nickname
+
+                 # Load feed cache for this site_dir
                  cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
                  cached_data = load_json(cache_file) or []
                  if isinstance(cached_data, list):
@@ -734,22 +763,29 @@ def index():
                          parsed_msg = parse_message_string(msg_str)
                          # Important: Ensure message belongs to the site indicated by the directory
                          if parsed_msg and parsed_msg['site'] == site_dir:
-                             subscription_feed.append(parsed_msg)
+                             subscription_feed.append(parsed_msg) # Add parsed message dict
                          elif parsed_msg:
                               print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping.", file=sys.stderr)
 
-    except FileNotFoundError:
+    except FileNotFoundError: # Should not be needed if load_json handles it, but keep for safety
         print(f"Warning: Subscriptions directory '{SUBSCRIPTIONS_DIR}' not found during index load.", file=sys.stderr)
-        subscription_dirs = []
+        subscriptions_with_nicknames = []
         subscription_feed = []
+        nicknames_map = {}
     except Exception as e:
-         print(f"Error loading subscription data: {e}", file=sys.stderr)
-         subscription_dirs = []
+         print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
+         subscriptions_with_nicknames = []
          subscription_feed = []
-
+         nicknames_map = {}
 
     # Sort combined subscription feed by timestamp (newest first)
     subscription_feed.sort(key=lambda x: x['timestamp'], reverse=True)
+
+    # --- START: Add Nickname to Subscription Feed Posts ---
+    # Iterate through the sorted feed and add the nickname using the map
+    for post in subscription_feed:
+        post['nickname'] = nicknames_map.get(post['site']) # Use .get() for safety
+    # --- END: Add Nickname to Subscription Feed Posts ---
 
     # Load profile data
     profile_data = load_json(PROFILE_FILE) or {} # Ensure profile_data is a dict
@@ -757,18 +793,19 @@ def index():
     return render_template_string(
         INDEX_TEMPLATE,
         feed=processed_feed,
-        subscription_feed=subscription_feed, # Pass the sorted subscription feed
+        subscription_feed=subscription_feed, # Pass the augmented and sorted subscription feed
         logged_in=is_logged_in(),
         site_name=SITE_NAME,
         onion_address=onion_address,
         utc_time=utc_now,
         protocol_version=PROTOCOL_VERSION,
         app_version=APP_VERSION,
-        subscriptions=subscription_dirs, # Pass directory names
+        subscriptions=subscriptions_with_nicknames, # Pass list of dicts for static list
         profile=profile_data,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH, # Pass max length to template
         bmd2html=bmd2html
     )
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -780,9 +817,32 @@ def login():
     if request.method == 'POST':
 
         global onion_address
-        secret_word = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE)).get("secret_word")
-        correct_passphrase = " ".join(get_passphrase(os.path.join(KEYS_DIR,onion_address), secret_word))
-        
+        # Ensure onion_address is set before trying to use it
+        if not onion_address:
+             error = 'Tor setup incomplete or failed. Cannot determine login credentials.'
+             print("Login failed: Tor setup incomplete.", file=sys.stderr)
+             return render_template_string(LOGIN_TEMPLATE, error=error)
+
+        secret_word_data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
+        if not secret_word_data or 'secret_word' not in secret_word_data:
+             error = 'Secret word configuration is missing or invalid.'
+             print("Login failed: Secret word file error.", file=sys.stderr)
+             return render_template_string(LOGIN_TEMPLATE, error=error)
+        secret_word = secret_word_data.get("secret_word")
+
+        onion_dir = find_first_onion_service_dir(KEYS_DIR)
+        if not onion_dir:
+            error = 'Cannot locate Tor key directory to verify passphrase.'
+            print("Login failed: Could not find Tor key directory.", file=sys.stderr)
+            return render_template_string(LOGIN_TEMPLATE, error=error)
+
+        try:
+            correct_passphrase = " ".join(get_passphrase(onion_dir, secret_word))
+        except Exception as e:
+            error = f'Error generating expected passphrase: {e}'
+            print(f"Login failed: Error during passphrase generation - {e}", file=sys.stderr)
+            return render_template_string(LOGIN_TEMPLATE, error=error)
+
         if request.form.get('passphrase') == correct_passphrase:
             session['logged_in'] = True
             session.permanent = True
@@ -1313,13 +1373,24 @@ def initialize_app():
          print("*****************************************************\n", file=sys.stderr)
 
     # Display passphrase for this site
-    data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
-    secret_word = data.get("secret_word")
-    print(f'Secret word is: {secret_word}' )
+    # Add checks for missing files/keys before trying to generate passphrase
+    if onion_dir:
+        try:
+            data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
+            if data and 'secret_word' in data:
+                secret_word = data.get("secret_word")
+                print(f'Secret word is: {secret_word}' )
+                passphrase = " ".join(get_passphrase(onion_dir, secret_word))
+                print(f'--- Passphrase for local user is: "{passphrase}" ---')
+            else:
+                print("Warning: Could not read secret word from file. Cannot display passphrase.", file=sys.stderr)
+        except FileNotFoundError:
+            print(f"Warning: Secret word file not found at '{os.path.join(KEYS_DIR, SECRET_WORD_FILE)}'. Cannot display passphrase.", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Error generating or displaying passphrase: {e}", file=sys.stderr)
+    else:
+        print("Warning: Cannot display passphrase as Tor key directory was not found.", file=sys.stderr)
 
-    passphrase = " ".join(get_passphrase(onion_dir, secret_word))
-    print(f'--- Passphrase for local user is: "{passphrase}" ---')
-    
 # --- Main Execution ---
 if __name__ == '__main__':
     initialize_app()
