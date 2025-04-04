@@ -30,7 +30,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.4'
+APP_VERSION = '0.1.5'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
@@ -113,7 +113,6 @@ def save_json(filename, data):
         print(f"Error: Could not write JSON to {filename}: {e}", file=sys.stderr)
     except Exception as e:
         print(f"Unexpected error saving JSON to {filename}: {e}", file=sys.stderr)
-
 
 def is_logged_in():
     """Checks if the user is logged in via session."""
@@ -485,9 +484,10 @@ INDEX_TEMPLATE = """
             <h2><span class="nickname">{{ profile.nickname }}</span> Feed</h2>
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
-                 <textarea name="content" rows="3" placeholder="What's happening? ({{ MAX_MSG_LENGTH }} chars max)" maxlength="{{ MAX_MSG_LENGTH }}" required></textarea><br>
-                 <input type="submit" value="Post" style="margin: 5px;">
-                 <span style="font-size: 0.8em; margin-left: 10px;"> Max 500 chars. Markdown: *italic*, **bold**, [link](url) </span>
+                <textarea id="content" name="content" rows="3" placeholder="What's happening? 500 chars max)" maxlength="500" required></textarea><br>
+                <input type="submit" value="Post" style="margin: 5px;">
+                <span id="char-count" style="font-size: 0.8em; margin-left: 10px;">0 / 500</span>
+                <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
             </form>
             {% else %}
             <p><i>You must <a href="{{ url_for('login')}}">login</a> to post.</i></p>
@@ -633,6 +633,24 @@ INDEX_TEMPLATE = """
 
       {% endif %} // --- END LOGGED IN SCRIPT LOGIC ---
     </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const textarea = document.getElementById("content");
+            const counter = document.getElementById("char-count");
+
+            if (textarea && counter) {
+                const updateCounter = () => {
+                    const length = textarea.value.length;
+                    counter.textContent = `${length} / 500`;
+                    counter.style.color = length > 500 ? "red" : "#aaa";
+                };
+
+                textarea.addEventListener("input", updateCounter);
+                updateCounter(); // initialize on load
+            }
+        });
+    </script>
+
 </body>
 </html>
 """
