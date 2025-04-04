@@ -14,6 +14,7 @@ import shutil # Added for directory removal
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
 import re # Added for parsing markdown
+import hashlib # For authentication
 
 # --- Tor Integration Imports ---
 try:
@@ -30,12 +31,13 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-APP_VERSION = '0.1.5'
+APP_VERSION = '0.1.6'
 PROFILE_FILE = 'profile.json'
 FEED_FILE = 'feed.json'
 SUBSCRIPTIONS_DIR = 'subscriptions'
 KEYS_DIR = 'keys'
 LOG_DIR = 'log'
+SECRET_WORD_FILE = 'secret_word'
 ONION_PORT = 80  # Virtual port the onion service will listen on
 FLASK_HOST = "127.0.0.1"  # Host Flask should listen on for Tor
 FLASK_PORT = 5000  # Port Flask should listen on for Tor
@@ -55,6 +57,49 @@ fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5) # Executor
 active_fetches = {} # Track active fetch tasks (optional for status)
 
 # --- Helper Functions ---
+
+def load_bip39_wordlist(filename='bip39_english.txt'):
+    """
+    Load the BIP-0039 word list from a file.
+    The file should contain exactly 2048 words (one per line).
+    """
+    with open(filename, 'r', encoding='utf-8') as f:
+        words = [line.strip() for line in f if line.strip()]
+    if len(words) != 2048:
+        raise ValueError("BIP-0039 word list must contain exactly 2048 words")
+    return words
+
+def get_passphrase(service_dir, secret_word) -> string:
+    """
+    Reads the last 64 bytes of the binary file, 
+    combines it with the secret_word and computes the SHA-256 hash,
+    truncates it to 66 bits (6 x 11 bits), and maps each 11-bit segment
+    to a word in the BIP-0039 word list.
+    """
+    # Load the word list
+    bip39 = load_bip39_wordlist()
+
+    # Read last 64 bytes (payload) of the file
+    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+
+    with open(key_file_path, "rb") as f:
+        f.seek(-64, os.SEEK_END)
+        payload = f.read(64)
+    
+    # Compute SHA-256 hash and convert to an integer
+    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
+    digest_int = int.from_bytes(digest, byteorder="big")
+    
+    # Truncate the digest to the top 66 bits
+    truncated = digest_int >> (256 - 66)
+    
+    # Extract 6 segments of 11 bits each
+    words = []
+    for i in range(6):
+        shift = (6 - i - 1) * 11
+        index = (truncated >> shift) & 0x7FF  # 0x7FF = 2047 (11 bits)
+        words.append(bip39[index])
+    return words
 
 def bmd2html(bmd_string):
     """Converts a Blitter Markdown string to valid html"""
@@ -384,7 +429,7 @@ LOGIN_TEMPLATE = """
   <h2>Login</h2>
   {% if error %}<p style="color:red;"><strong>Error:</strong> {{ error }}</p>{% endif %}
   <form method="post">
-    Password: <input type="password" name="password"><br>
+    Passphrase: <input type="password" name="passphrase"><br>
     <input type="submit" value="Login">
   </form>
   <p><a href="{{ url_for('index') }}">Back to Feed</a></p>
@@ -723,17 +768,18 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Login route - basic password stub."""
+    """Login route"""
     if is_logged_in():
         return redirect(url_for('index'))
 
     error = None
     if request.method == 'POST':
-        profile_data = load_json(PROFILE_FILE) or {}
-        correct_password = profile_data.get('passphrase')
-        if not correct_password:
-             error = 'Login disabled: No passphrase set in profile.json.'
-        elif request.form.get('password') == correct_password:
+
+        global onion_address
+        secret_word = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE)).get("secret_word")
+        correct_passphrase = " ".join(get_passphrase(os.path.join(KEYS_DIR,onion_address), secret_word))
+        
+        if request.form.get('passphrase') == correct_passphrase:
             session['logged_in'] = True
             session.permanent = True
             app.permanent_session_lifetime = datetime.timedelta(days=7) # Example: 1 week session
@@ -1196,31 +1242,26 @@ def initialize_app():
 
     print(f"Directories checked/created: {SUBSCRIPTIONS_DIR}, {KEYS_DIR}, {LOG_DIR}, static")
 
+    if not os.path.exists(os.path.join(KEYS_DIR,SECRET_WORD_FILE)):
+        save_json(os.path.join(KEYS_DIR,SECRET_WORD_FILE), { "secret_word": "changeme"})
+        print(f'Secret word file created at {os.path.join(KEYS_DIR,SECRET_WORD_FILE)}.')
+        print("IMPORTANT: Default secret word 'changeme' set. Please login and change your secret word.", file=sys.stderr)
 
     if not os.path.exists(PROFILE_FILE):
         print(f"Profile file '{PROFILE_FILE}' not found, creating default.")
         save_json(PROFILE_FILE, {
           "nickname": "User",
-          "passphrase": "change_this_password", # Instruct user to change this!
           "location": "", "description": "My Blitter profile.",
           "email": None, "website": None
-          # Removed picture/background fields for simplicity now
+          # TODO: Add picture, background, pronouns, Date of birth
         })
-        print("IMPORTANT: Default password 'change_this_password' set. Please login and change your profile passphrase.", file=sys.stderr)
     else:
          print(f"Profile file found: {PROFILE_FILE}")
          profile_data = load_json(PROFILE_FILE)
          if not profile_data: # Handle case where file exists but is empty/invalid
               print(f"Warning: Profile file '{PROFILE_FILE}' is empty or invalid. Resetting to default.", file=sys.stderr)
               # Optionally back up the invalid file before overwriting
-              save_json(PROFILE_FILE, {"nickname": "User", "passphrase": "change_this_password", "location": "", "description": "My Blitter profile.", "email": None, "website": None})
-              print("IMPORTANT: Default password 'change_this_password' set. Please login and change your profile passphrase.", file=sys.stderr)
-
-         elif not profile_data.get('passphrase'):
-              print(f"WARNING: 'passphrase' not set in {PROFILE_FILE}. Login will be disabled until set via manual edit.", file=sys.stderr)
-         elif profile_data.get('passphrase') == 'change_this_password':
-              print("WARNING: Default passphrase 'change_this_password' is still set. Please change it for security.", file=sys.stderr)
-
+              save_json(PROFILE_FILE, {"nickname": "User", "location": "", "description": "My Blitter profile.", "email": None, "website": None})
 
     if not os.path.exists(FEED_FILE):
         print(f"Feed file '{FEED_FILE}' not found, creating empty feed.")
@@ -1240,7 +1281,7 @@ def initialize_app():
         SITE_NAME = "tor_disabled"
         return
 
-    print("--- Starting Tor Onion Service Setup ---")
+    print("\n--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
         key_blob = get_key_blob(onion_dir)
@@ -1267,10 +1308,18 @@ def initialize_app():
          print("and CookieAuthentication, and a valid key exists in the 'keys' directory.", file=sys.stderr)
          print("*****************************************************\n", file=sys.stderr)
 
+    # Display passphrase for this site
+    data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
+    secret_word = data.get("secret_word")
+    print(f'Secret word is: {secret_word}' )
+
+    passphrase = " ".join(get_passphrase(onion_dir, secret_word))
+    print(f'--- Passphrase for local user is: "{passphrase}" ---')
+    
 # --- Main Execution ---
 if __name__ == '__main__':
     initialize_app()
-    print(f"\nStarting Flask server for site '{SITE_NAME}' ({onion_address or 'Tor Disabled/Failed'})")
+    print(f"\n--- Starting Flask server ---\nSite: '{SITE_NAME}'")
     print(f"Listening on http://{FLASK_HOST}:{FLASK_PORT}")
     if onion_address:
         print(f"Access via Tor at: http://{onion_address}")
