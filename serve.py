@@ -1,6 +1,6 @@
 
 #!/usr/bin/env python3
-APP_VERSION = '0.1.14' 
+APP_VERSION = '0.1.15' 
 PROTOCOL_VERSION = "0002" # Version constants defined before imports for visibility
 import os
 import json
@@ -514,7 +514,7 @@ LOGIN_TEMPLATE = """
   <h2>Login</h2>
   {% if error %}<p style="color:red;"><strong>Error:</strong> {{ error }}</p>{% endif %}
   <form method="post">
-    Passphrase: <input type="password" name="passphrase"><br>
+    Passphrase: <input type="password" name="passphrase" value=""><br>
     <input type="submit" value="Login">
   </form>
   <p><a href="{{ url_for('index') }}">Back to Feed</a></p>
@@ -784,6 +784,15 @@ INDEX_TEMPLATE = """
       {% endif %}
     </script>
     <script>
+
+        const textarea = document.getElementById('content');
+        textarea.addEventListener('keydown', e => {
+            if (e.key === 'Enter') e.preventDefault();
+        });
+        textarea.addEventListener('input', () => {
+            textarea.value = textarea.value.replace(/[\\r\\n]+/g, ' ');
+        });
+
         document.addEventListener("DOMContentLoaded", function () {
             const textarea = document.getElementById("content");
             const counter = document.getElementById("byte-count");
