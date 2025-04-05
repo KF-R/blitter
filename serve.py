@@ -1,6 +1,5 @@
-
 #!/usr/bin/env python3
-APP_VERSION = '0.1.15' 
+APP_VERSION = '0.1.16' 
 PROTOCOL_VERSION = "0002" # Version constants defined before imports for visibility
 import os
 import json
@@ -557,6 +556,7 @@ INDEX_TEMPLATE = """
         .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
         .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
         .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 15px; background-color: #2a2a2a; border-radius: 5px;}
+        .post-box.own-post-highlight { border: 2px solid #ffcc00; /* Highlight for own posts */ }
         .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
         .post-meta a { color: #aaa; }
         .post-content { margin-top: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
@@ -629,7 +629,7 @@ INDEX_TEMPLATE = """
             <hr/>
             {% endif %}
 
-            {% for post in feed %}
+            {% for post in user_feed %}
             <div class="post-box">
                 <div class="post-meta">
                     Posted: {{ post.display_timestamp }}
@@ -646,28 +646,38 @@ INDEX_TEMPLATE = """
         </div>
 
         <div class="subscriptions-panel">
-            <h2>Subscriptions</h2>
+            <h2>Timeline</h2> {# Changed title from Subscriptions to Timeline #}
 
-             {% for sub_post in subscription_feed %}
-             <div class="post-box">
+             {% for post in combined_feed %} {# Use the combined feed here #}
+             <div class="post-box {% if post.is_own_post %}own-post-highlight{% endif %}"> {# Add highlight class if it's an own post #}
                 <div class="post-meta">
-                    {% if sub_post.nickname %}
-                        <span class="nickname">{{ sub_post.nickname }}: </span>
+                    {% if post.is_own_post %}
+                        <span class="nickname">{{ profile.nickname if profile else 'You' }}: </span>
+                        <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+                        {{ post.display_timestamp }}
+                        {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
+                        | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
+                        {% endif %}
+                        | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
+                    {% else %}
+                        {% if post.nickname %}
+                            <span class="nickname">{{ post.nickname }}: </span>
+                        {% endif %}
+                        <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+                        {{ post.display_timestamp }}
+                        {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
+                        | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
+                        {% endif %}
+                        | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
                     {% endif %}
-                    <span class="subscription-site-name">{{ sub_post.site }}.onion</span> <br>
-                    {{ sub_post.display_timestamp }}
-                    {% if sub_post.reply_id and sub_post.reply_id != '0'*57 + ':' + '0'*16 %}
-                    | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ sub_post.reply_id }}</a>
-                    {% endif %}
-                    | <a href="http://{{ sub_post.site }}.onion/{{ sub_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
                 </div>
-                <div class="post-content">{{ bmd2html(sub_post.display_content) | safe }}</div>
+                <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
              </div>
              {% else %}
-             <p>No messages found in subscription caches.</p>
+             <p>No messages found in timeline.</p> {# Updated message #}
              {% if subscriptions %}
              <p>
-               {% if logged_in %} Click 'Fetch' to update. {% else %} Login to fetch updates. {% endif %}
+               {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
              </p>
              {% endif %}
              {% endfor %}
@@ -786,35 +796,36 @@ INDEX_TEMPLATE = """
     <script>
 
         const textarea = document.getElementById('content');
-        textarea.addEventListener('keydown', e => {
-            if (e.key === 'Enter') e.preventDefault();
-        });
-        textarea.addEventListener('input', () => {
-            textarea.value = textarea.value.replace(/[\\r\\n]+/g, ' ');
-        });
+        if (textarea) { // Check if textarea exists before adding listeners
+            textarea.addEventListener('keydown', e => {
+                if (e.key === 'Enter') e.preventDefault();
+            });
+            textarea.addEventListener('input', () => {
+                textarea.value = textarea.value.replace(/[\\r\\n]+/g, ' ');
+            });
 
-        document.addEventListener("DOMContentLoaded", function () {
-            const textarea = document.getElementById("content");
-            const counter = document.getElementById("byte-count");
-            const maxBytes = {{ MAX_MSG_LENGTH }};
+            document.addEventListener("DOMContentLoaded", function () {
+                const counter = document.getElementById("byte-count");
+                const maxBytes = {{ MAX_MSG_LENGTH }};
 
-            if (textarea && counter) {
-                const updateCounter = () => {
-                    const text = textarea.value;
-                    const byteLength = new TextEncoder().encode(text).length;
+                if (counter) { // Check if counter exists
+                    const updateCounter = () => {
+                        const text = textarea.value;
+                        const byteLength = new TextEncoder().encode(text).length;
 
-                    counter.textContent = `${byteLength} / ${maxBytes} bytes`;
-                    if (byteLength > maxBytes) {
-                        counter.style.color = "red";
-                    } else {
-                         counter.style.color = "#aaa";
-                    }
-                };
+                        counter.textContent = `${byteLength} / ${maxBytes} bytes`;
+                        if (byteLength > maxBytes) {
+                            counter.style.color = "red";
+                        } else {
+                             counter.style.color = "#aaa";
+                        }
+                    };
 
-                textarea.addEventListener("input", updateCounter);
-                updateCounter();
-            }
-        });
+                    textarea.addEventListener("input", updateCounter);
+                    updateCounter();
+                }
+            });
+        }
     </script>
 
 </body>
@@ -825,22 +836,27 @@ INDEX_TEMPLATE = """
 
 @app.route('/')
 def index():
-    feed_data = load_json(FEED_FILE) or []
-    processed_feed = []
-    if isinstance(feed_data, list):
-         for msg_str in reversed(feed_data[:]):
+    # --- Load User's Own Feed ---
+    user_feed_data = load_json(FEED_FILE) or []
+    user_processed_feed = []
+    if isinstance(user_feed_data, list):
+         # Iterate through the list normally for chronological processing if needed, but reverse later for display
+         for msg_str in user_feed_data:
             parsed_msg = parse_message_string(msg_str)
             if parsed_msg and parsed_msg['site'] == SITE_NAME:
-                 processed_feed.append(parsed_msg)
+                 parsed_msg['is_own_post'] = True # Add flag for own posts
+                 user_processed_feed.append(parsed_msg)
             elif parsed_msg:
                  print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
             else:
-                 print(f"Warning: Removing invalid message string from main feed '{FEED_FILE}': {msg_str[:100]}...", file=sys.stderr)
+                 # Don't remove from feed here, just skip processing
+                 print(f"Warning: Skipping invalid message string from main feed '{FEED_FILE}': {msg_str[:100]}...", file=sys.stderr)
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
+    # --- Load Subscription Info and Feed ---
     subscriptions_with_nicknames = []
-    subscription_feed = []
+    subscription_raw_feed = []
     nicknames_map = {}
 
     try:
@@ -859,49 +875,62 @@ def index():
                  cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
                  cached_data = load_json(cache_file) or []
                  if isinstance(cached_data, list):
-                     for msg_str in cached_data[:]:
+                     for msg_str in cached_data: # Iterate normally
                          parsed_msg = parse_message_string(msg_str)
                          if parsed_msg and parsed_msg['site'] == site_dir:
-                             subscription_feed.append(parsed_msg)
+                             parsed_msg['is_own_post'] = False # Add flag for subscription posts
+                             subscription_raw_feed.append(parsed_msg)
                          elif parsed_msg:
                               print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
                          else:
+                              # Don't modify cache here, just skip processing
                               print(f"Warning: Invalid message string found in cache file '{cache_file}'. Skipping display: {msg_str[:100]}...", file=sys.stderr)
                  elif cached_data is not None:
                       print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
 
     except FileNotFoundError:
         print(f"Warning: Subscriptions directory '{SUBSCRIPTIONS_DIR}' not found during index load.", file=sys.stderr)
+        # Ensure lists are initialized even on error
         subscriptions_with_nicknames = []
-        subscription_feed = []
+        subscription_raw_feed = []
         nicknames_map = {}
     except Exception as e:
          print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
+         # Ensure lists are initialized even on error
          subscriptions_with_nicknames = []
-         subscription_feed = []
+         subscription_raw_feed = []
          nicknames_map = {}
 
+    # --- Combine and Sort Feeds for Timeline ---
+    combined_feed = user_processed_feed + subscription_raw_feed
     try:
-        subscription_feed.sort(key=lambda x: x['timestamp'], reverse=True)
+        # Sort by timestamp (which is hex string, lexicographical sort works)
+        combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
     except Exception as e:
-        print(f"Error sorting subscription feed: {e}", file=sys.stderr)
+        print(f"Error sorting combined feed: {e}", file=sys.stderr)
 
-    for post in subscription_feed:
-        post['nickname'] = nicknames_map.get(post['site'])
+    # Add nicknames to subscription posts in the *combined* feed after sorting
+    for post in combined_feed:
+        if not post.get('is_own_post', False): # Check if it's not an own post
+            post['nickname'] = nicknames_map.get(post['site'])
 
+    # --- Prepare data for template ---
     profile_data = load_json(PROFILE_FILE) or {}
+
+    # User feed for the left panel (still needed separately)
+    user_feed_for_panel = sorted(user_processed_feed, key=lambda x: x['timestamp'], reverse=True)
 
     return render_template_string(
         INDEX_TEMPLATE,
-        feed=processed_feed,
-        subscription_feed=subscription_feed,
+        user_feed=user_feed_for_panel, # Pass the user's feed separately for the left panel
+        combined_feed=combined_feed,    # Pass the combined feed for the right panel (timeline)
         logged_in=is_logged_in(),
         site_name=SITE_NAME,
         onion_address=onion_address,
         utc_time=utc_now,
         protocol_version=PROTOCOL_VERSION,
         app_version=APP_VERSION,
-        subscriptions=subscriptions_with_nicknames,
+        subscriptions=subscriptions_with_nicknames, # Still needed for the list at the bottom
         profile=profile_data,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html
@@ -934,13 +963,6 @@ def login():
              error = 'Tor key file not found. Cannot verify passphrase.'
              print("Login failed: Tor key file missing.", file=sys.stderr)
              return render_template_string(LOGIN_TEMPLATE, error=error)
-        except Exception as e:
-            error = f'Error generating expected passphrase: {e}'
-            print(f"Login failed: Error during passphrase generation - {e}", file=sys.stderr)
-            return render_template_string(LOGIN_TEMPLATE, error=error)
-
-        try:
-            correct_passphrase = " ".join(get_passphrase(onion_dir, secret_word))
         except Exception as e:
             error = f'Error generating expected passphrase: {e}'
             print(f"Login failed: Error during passphrase generation - {e}", file=sys.stderr)
@@ -1041,7 +1063,8 @@ def post():
         print(f"New post added with timestamp: {timestamp}")
     except Exception as e:
          print(f"Error saving post to feed file {FEED_FILE}: {e}", file=sys.stderr)
-         return redirect(url_for('index'))
+         # Optionally, provide feedback to the user here if possible
+         return redirect(url_for('index')) # Redirect anyway
 
     return redirect(url_for('index'))
 
@@ -1091,12 +1114,16 @@ def view_message(timestamp):
                      parsed_msg = parse_message_string(msg_str)
                      if parsed_msg and parsed_msg['site'] == SITE_NAME and parsed_msg['timestamp'] == timestamp:
                          try:
+                             # Attempt to decode as pure ASCII first for strict compliance?
                              ascii_msg = msg_str.encode('ascii').decode('ascii')
                              return ascii_msg, 200, {'Content-Type': 'text/plain; charset=ascii'}
                          except UnicodeEncodeError:
+                              # If ASCII fails, fall back to UTF-8
                               print(f"Warning: Message {timestamp} contains non-ASCII characters, returning as UTF-8.", file=sys.stderr)
                               return msg_str, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
+    # If not found in own feed, could potentially check subscription caches too?
+    # For now, only checks own feed as per original logic.
     abort(404, description="Message not found.")
 
 @app.route('/add_subscription', methods=['POST'])
@@ -1105,67 +1132,84 @@ def add_subscription():
         abort(403)
 
     onion_input = request.form.get('onion_address', '').strip().lower()
+    # Clean the input URL
     onion_input = onion_input.replace("http://","").replace("https://","")
     if onion_input.endswith('/'):
          onion_input = onion_input[:-1]
 
     if not onion_input:
+        # Optionally add a flash message here
         return redirect(url_for('index'))
 
+    # Derive directory name and full .onion address
     if onion_input.endswith('.onion'):
          dir_name = onion_input[:-6]
     else:
          dir_name = onion_input
-         onion_input += '.onion'
+         onion_input += '.onion' # Ensure it has .onion for display/fetch
 
+    # Validate format
     if not (len(dir_name) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in dir_name)):
          print(f"Add subscription failed: Invalid address format for {onion_input}", file=sys.stderr)
+         # Optionally add a flash message here
+         return redirect(url_for('index'))
+
+    # Prevent adding self
+    if dir_name == SITE_NAME:
+         print(f"Add subscription failed: Cannot subscribe to own site {onion_input}", file=sys.stderr)
+         # Optionally add a flash message here
          return redirect(url_for('index'))
 
     subscription_dir = os.path.join(SUBSCRIPTIONS_DIR, dir_name)
     if os.path.isdir(subscription_dir):
         print(f"Subscription attempt for already subscribed site: {onion_input}")
+        # Optionally add a flash message here
         return redirect(url_for('index'))
 
+    # --- Try Fetching /about info ---
     about_info = {}
     try:
         print(f"Attempting to fetch /about for new subscription: {onion_input}")
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         about_url = f"http://{onion_input}/about"
         r = requests.get(about_url, proxies=proxies, timeout=FETCH_TIMEOUT)
-        r.raise_for_status()
+        r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         about_text = r.text.strip()
         if not about_text:
             print(f"Warning: /about for {onion_input} returned empty response.")
         else:
+            # Basic parsing of the /about response
             lines = about_text.splitlines()
             temp_info = {}
-            if lines and lines[0].strip().lower() != onion_input:
+            if lines and lines[0].strip().lower() != onion_input: # Check first line matches address
                  print(f"Warning: /about first line '{lines[0]}' does not match expected onion address '{onion_input}'")
-            for line in lines[1:]:
+            for line in lines[1:]: # Skip the first line (address)
                  if ":" in line:
                      try:
                          key, value = line.split(":", 1)
                          key = key.strip().lower()
                          value = value.strip()
+                         # Map known fields
                          if key in ['nickname', 'loc', 'desc', 'email', 'website']:
-                              if key == 'loc': key = 'location'
-                              if key == 'desc': key = 'description'
+                              if key == 'loc': key = 'location' # Normalize key
+                              if key == 'desc': key = 'description' # Normalize key
                               temp_info[key] = value
                      except ValueError:
                           print(f"Warning: Malformed line in /about from {onion_input}: {line}", file=sys.stderr)
             about_info = temp_info
+            print(f"Successfully fetched /about info for {onion_input}: {about_info}")
 
     except requests.exceptions.Timeout:
         print(f"Error fetching /about from {onion_input}: Timeout after {FETCH_TIMEOUT}s", file=sys.stderr)
-        return redirect(url_for('index'))
+        # Optionally add flash message - proceed with add anyway? Or fail? Let's proceed.
     except requests.exceptions.RequestException as e:
         print(f"Error fetching /about from {onion_input}: {e}", file=sys.stderr)
-        return redirect(url_for('index'))
+        # Optionally add flash message - proceed with add anyway? Or fail? Let's proceed.
     except Exception as e:
         print(f"Unexpected error fetching /about from {onion_input}: {e}", file=sys.stderr)
-        return redirect(url_for('index'))
+        # Optionally add flash message - proceed with add anyway? Or fail? Let's proceed.
 
+    # --- Create Directory and Save Notes ---
     try:
         os.makedirs(subscription_dir, exist_ok=True)
         notes_file = os.path.join(subscription_dir, "notes.json")
@@ -1177,19 +1221,24 @@ def add_subscription():
             "website": about_info.get('website', '')
         }
         save_json(notes_file, notes_data)
-        print(f"Successfully added subscription: {onion_input}")
+        print(f"Successfully added subscription: {onion_input} (Directory: {subscription_dir})")
+
+        # Trigger initial fetch in background
         print(f"Submitting initial fetch task for new subscription {dir_name}")
         fetch_executor.submit(fetch_and_process_feed, dir_name)
+        # Optionally add flash message success
 
     except Exception as e:
         print(f"Error creating subscription directory or notes file for {onion_input}: {e}", file=sys.stderr)
+        # Attempt cleanup if dir was created but failed after
         if os.path.exists(subscription_dir):
              try:
-                  if not os.listdir(subscription_dir):
+                  if not os.listdir(subscription_dir): # Only remove if empty
                        os.rmdir(subscription_dir)
              except Exception as clean_e:
                   print(f"Error cleaning up directory {subscription_dir} after failed add: {clean_e}", file=sys.stderr)
-        return redirect(url_for('index'))
+        # Optionally add flash message error
+        return redirect(url_for('index')) # Redirect on failure too
 
     return redirect(url_for('index'))
 
@@ -1202,6 +1251,7 @@ def fetch_and_process_feed(site_dir):
     new_messages_added = 0
 
     try:
+        # --- Load Existing Cache and Validate ---
         existing_cache = load_json(cache_file) or []
         if not isinstance(existing_cache, list):
             print(f"[Fetcher] Warning: Invalid cache file {cache_file}. Starting fresh.", file=sys.stderr)
@@ -1209,6 +1259,7 @@ def fetch_and_process_feed(site_dir):
 
         existing_timestamps = set()
         valid_existing_cache = []
+        # Validate existing cache entries
         for msg_str in existing_cache:
              parsed = parse_message_string(msg_str)
              if parsed and parsed['site'] == site_dir:
@@ -1216,84 +1267,116 @@ def fetch_and_process_feed(site_dir):
                  valid_existing_cache.append(msg_str)
              elif parsed:
                   print(f"[Fetcher] Warning: Found message from wrong site ({parsed['site']}) in cache {cache_file}. Discarding.", file=sys.stderr)
+             # else: Invalid message format, implicitly discarded by not adding to valid_existing_cache
 
+        # --- Fetch New Feed ---
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         fetched_content = None
         try:
+             # Use stream=True and iterate lines for potentially large feeds? For now, .text is fine.
              with requests.get(feed_url, proxies=proxies, timeout=FETCH_TIMEOUT, stream=True) as response:
                  response.raise_for_status()
-                 fetched_content = response.text
+                 # Consider adding check for content-type?
+                 # Read content, handle potential decoding errors
+                 try:
+                     fetched_content = response.content.decode('utf-8', errors='replace')
+                 except UnicodeDecodeError as ude:
+                     print(f"[Fetcher] Unicode decode error reading feed from {feed_url}: {ude}. Trying latin-1.", file=sys.stderr)
+                     fetched_content = response.content.decode('latin-1', errors='replace') # Fallback? Or fail?
 
         except requests.exceptions.Timeout:
              print(f"[Fetcher] Timeout fetching {feed_url}", file=sys.stderr)
-             return 0
+             return 0 # Return 0 new messages on timeout
         except requests.exceptions.RequestException as e:
              print(f"[Fetcher] Error fetching {feed_url}: {e}", file=sys.stderr)
-             return 0
+             return 0 # Return 0 new messages on connection error
         except Exception as e:
              print(f"[Fetcher] Unexpected error during fetch request for {feed_url}: {e}", file=sys.stderr)
-             return 0
+             return 0 # Return 0 new messages on other errors
 
+        # --- Process Fetched Feed ---
         if fetched_content is None:
-             print(f"[Fetcher] Failed to retrieve content from {feed_url}")
+             print(f"[Fetcher] Failed to retrieve content from {feed_url}", file=sys.stderr)
+             # Save cleaned cache if it was modified
              if len(valid_existing_cache) != len(existing_cache):
+                  print(f"[Fetcher] Saving cleaned cache for {site_onion} after fetch failure.", file=sys.stderr)
                   save_json(cache_file, valid_existing_cache)
              return 0
 
         if not fetched_content.strip():
             print(f"[Fetcher] Empty feed received from {site_onion}")
+            # Save cleaned cache if it was modified
             if len(valid_existing_cache) != len(existing_cache):
+                print(f"[Fetcher] Saving cleaned cache for {site_onion} after receiving empty feed.", file=sys.stderr)
                 save_json(cache_file, valid_existing_cache)
             return 0
 
         processed_new_messages = []
         malformed_lines = 0
         mismatched_site_lines = 0
+        duplicate_timestamps = 0
+
+        # Process lines from the fetched content
         for line in fetched_content.strip().splitlines():
             msg_str = line.strip()
-            if not msg_str: continue
+            if not msg_str: continue # Skip empty lines
 
             parsed_msg = parse_message_string(msg_str)
             if not parsed_msg:
-                if malformed_lines == 0:
+                if malformed_lines < 5: # Log first few errors
                      print(f"[Fetcher] Invalid message format received from {site_onion}: {msg_str[:100]}...", file=sys.stderr)
                 malformed_lines += 1
                 continue
 
+            # SECURITY CHECK: Ensure message site matches the feed source
             if parsed_msg['site'] != site_dir:
-                 if mismatched_site_lines == 0:
-                      print(f"[Fetcher] SECURITY WARNING: Message received from {site_onion} claims to be from {parsed_msg['site']}. DISCARDING.", file=sys.stderr)
+                 if mismatched_site_lines < 5: # Log first few warnings
+                      print(f"[Fetcher] SECURITY WARNING: Message received from {site_onion} claims to be from {parsed_msg['site']}. DISCARDING: {msg_str[:100]}...", file=sys.stderr)
                  mismatched_site_lines +=1
                  continue
 
+            # Check if timestamp is already known
             if parsed_msg['timestamp'] not in existing_timestamps:
                 processed_new_messages.append(msg_str)
-                existing_timestamps.add(parsed_msg['timestamp'])
+                existing_timestamps.add(parsed_msg['timestamp']) # Add to known set immediately
                 new_messages_added += 1
+            else:
+                 duplicate_timestamps += 1 # Count duplicates seen in the *new* feed
 
-        if malformed_lines > 1:
-             print(f"[Fetcher] ...skipped {malformed_lines - 1} more malformed lines from {site_onion}.", file=sys.stderr)
-        if mismatched_site_lines > 1:
-             print(f"[Fetcher] ...skipped {mismatched_site_lines - 1} more mismatched site lines from {site_onion}.", file=sys.stderr)
+        # Log summary of skipped lines if any were skipped
+        if malformed_lines > 5:
+             print(f"[Fetcher] ...skipped {malformed_lines - 5} more malformed lines from {site_onion}.", file=sys.stderr)
+        if mismatched_site_lines > 5:
+             print(f"[Fetcher] ...skipped {mismatched_site_lines - 5} more mismatched site lines from {site_onion}.", file=sys.stderr)
+        if duplicate_timestamps > 0:
+             print(f"[Fetcher] Skipped {duplicate_timestamps} duplicate messages already present in cache for {site_onion}.")
 
+        # --- Update Cache File ---
         cache_updated = False
         if new_messages_added > 0:
             updated_cache = valid_existing_cache + processed_new_messages
+            # Consider sorting the cache file by timestamp before saving?
+            # updated_cache.sort(key=lambda m: parse_message_string(m)['timestamp']) # Optional sort
             save_json(cache_file, updated_cache)
-            print(f"[Fetcher] Added {new_messages_added} new messages for {site_onion}")
+            print(f"[Fetcher] Added {new_messages_added} new messages for {site_onion}. Cache size: {len(updated_cache)}")
             cache_updated = True
         else:
-            print(f"[Fetcher] No new messages found for {site_onion}")
+            # If no new messages, still save if the cache was cleaned
             if len(valid_existing_cache) != len(existing_cache):
+                 print(f"[Fetcher] No new messages, but saving cleaned cache for {site_onion}. Cache size: {len(valid_existing_cache)}")
                  save_json(cache_file, valid_existing_cache)
                  cache_updated = True
+            else:
+                 print(f"[Fetcher] No new messages found for {site_onion}")
 
         if not cache_updated:
             print(f"[Fetcher] Cache file {cache_file} remains unchanged.")
 
     except Exception as e:
         print(f"[Fetcher] Unexpected error processing feed for {site_onion}: {e}", file=sys.stderr)
-        return 0
+        import traceback
+        traceback.print_exc() # Print traceback for unexpected errors
+        return 0 # Return 0 on error
 
     return new_messages_added
 
@@ -1303,14 +1386,16 @@ def run_fetch_cycle():
 
     print(f"[{datetime.datetime.now().isoformat()}] Attempting scheduled fetch cycle...")
 
+    # Use non-blocking acquire to avoid waiting if a manual fetch is running
     if fetch_lock.acquire(blocking=False):
         print("[Fetcher] Acquired lock for scheduled run.")
         total_new_messages = 0
-        sites_fetched = 0
+        sites_fetched_count = 0
         try:
             start_time = time.time()
             subscription_dirs = []
             if os.path.isdir(SUBSCRIPTIONS_DIR):
+                # Validate directory names again here
                 subscription_dirs = [d for d in os.listdir(SUBSCRIPTIONS_DIR)
                                      if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
                                      and len(d) == 56
@@ -1320,40 +1405,62 @@ def run_fetch_cycle():
                 print("[Fetcher] No valid subscription directories found.")
             else:
                 print(f"[Fetcher] Submitting {len(subscription_dirs)} sites for background fetching...")
+                # Submit all tasks to the executor
                 futures = {fetch_executor.submit(fetch_and_process_feed, site_dir): site_dir for site_dir in subscription_dirs}
 
+                # Wait for results and tally
                 results = concurrent.futures.wait(futures)
+                sites_fetched_count = len(futures) # Number of submitted tasks
 
-                sites_fetched = len(futures)
                 for future in results.done:
+                     site = futures[future] # Get the site associated with the future
                      try:
-                         new_count = future.result()
-                         total_new_messages += new_count
+                         new_count = future.result() # Get the return value (new messages)
+                         if new_count is not None: # Check if task completed successfully
+                              total_new_messages += new_count
+                         else:
+                              # Should not happen if function always returns int, but safety check
+                              print(f'[Fetcher] Warning: Task for site {site} returned None.', file=sys.stderr)
                      except Exception as exc:
-                          site = futures[future]
+                          # Log exceptions raised by the worker function
                           print(f'[Fetcher] Site {site} generated an exception during fetch: {exc}', file=sys.stderr)
 
+                # Report tasks that didn't complete (shouldn't happen with wait unless timeout?)
                 if results.not_done:
                      print(f"[Fetcher] Warning: {len(results.not_done)} fetch tasks did not complete.", file=sys.stderr)
+                     for future in results.not_done:
+                          site = futures[future]
+                          print(f"[Fetcher] Task for site {site} did not complete.", file=sys.stderr)
+
 
             end_time = time.time()
             duration = end_time - start_time
             print(f"[Fetcher] Scheduled fetch cycle completed in {duration:.2f} seconds.")
-            print(f"[Fetcher] Fetched {sites_fetched} sites, added {total_new_messages} total new messages.")
+            print(f"[Fetcher] Attempted fetch for {sites_fetched_count} sites, added {total_new_messages} total new messages across all feeds.")
 
         except Exception as e:
-            print(f"[Fetcher] Error during scheduled fetch cycle: {e}", file=sys.stderr)
+            # Catch errors in the coordination logic itself
+            print(f"[Fetcher] Error during scheduled fetch cycle coordination: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
         finally:
             fetch_lock.release()
             print("[Fetcher] Released lock for scheduled run.")
     else:
-        print("[Fetcher] Skipping scheduled run: Fetch lock already held.")
+        print("[Fetcher] Skipping scheduled run: Fetch lock already held (likely by manual fetch).")
 
-    if fetch_timer is not None or not hasattr(sys, 'is_exiting'):
+    # Reschedule the next run, ensuring it doesn't reschedule if app is exiting
+    # Check if fetch_timer was cancelled (e.g., during shutdown)
+    # Check a flag like sys.is_exiting which needs to be set in the finally block of app.run
+    app_is_exiting = getattr(sys, 'is_exiting', False)
+    if not app_is_exiting:
         print(f"[Fetcher] Scheduling next fetch cycle in {FETCH_CYCLE} seconds.")
         fetch_timer = threading.Timer(FETCH_CYCLE, run_fetch_cycle)
-        fetch_timer.daemon = True
+        fetch_timer.daemon = True # Ensure timer thread doesn't block exit
         fetch_timer.start()
+    else:
+         print("[Fetcher] Application is exiting, not scheduling next fetch cycle.")
+
 
 @app.route('/fetch_subscriptions', methods=['POST'])
 def fetch_subscriptions():
@@ -1368,6 +1475,7 @@ def fetch_subscriptions():
     # Use non-blocking acquire and a try/finally block for safe lock release.
     if fetch_lock.acquire(blocking=False):
         print("[Fetcher] Acquired lock for manual run.")
+        submitted_tasks = 0
         try:
             subscription_dirs = []
             if os.path.isdir(SUBSCRIPTIONS_DIR):
@@ -1378,27 +1486,34 @@ def fetch_subscriptions():
 
             if not subscription_dirs:
                 print("[Fetcher] No subscriptions found to fetch.")
+                # Release lock before returning
+                fetch_lock.release()
+                print("[Fetcher] Released lock for manual run (no sites).")
                 return jsonify({"message": "No subscriptions to fetch."})
 
-            submitted_tasks = 0
             print(f"[Fetcher] Submitting {len(subscription_dirs)} sites for background fetching (manual trigger)...")
-            futures = {}
+            # Submit tasks but don't wait for them here
             for site_dir in subscription_dirs:
-                future = fetch_executor.submit(fetch_and_process_feed, site_dir)
-                futures[future] = site_dir
+                fetch_executor.submit(fetch_and_process_feed, site_dir)
                 submitted_tasks += 1
 
             print(f"[Fetcher] Submitted {submitted_tasks} site(s) for background fetching.")
-            return jsonify({"message": f"Started background fetch for {submitted_tasks} subscription(s). Refresh later."})
+            # Return immediately after submitting
+            return jsonify({"message": f"Started background fetch for {submitted_tasks} subscription(s). Refresh later to see results."})
+
         except Exception as e:
             print(f"[Fetcher] Error submitting manual fetch tasks: {e}", file=sys.stderr)
+            # Release lock in case of error during submission
+            # fetch_lock.release() # Should be handled by finally
+            # print("[Fetcher] Released lock after error in manual submission.")
             return jsonify({"error": "Failed to start fetch process."}), 500
         finally:
+             # Ensure lock is always released if acquired
              fetch_lock.release()
-             print("[Fetcher] Released lock for manual run after submission.")
+             print("[Fetcher] Released lock for manual run (submission phase).")
     else:
         print("[Fetcher] Manual fetch request denied: Fetch lock already held.")
-        return jsonify({"message": "Fetch operation already in progress. Please wait."}), 429
+        return jsonify({"message": "Fetch operation already in progress. Please wait."}), 429 # 429 Too Many Requests
 
 @app.route('/remove_subscription/<string:site_dir>', methods=['POST'])
 def remove_subscription(site_dir):
@@ -1407,13 +1522,16 @@ def remove_subscription(site_dir):
         print(f"Unauthorized attempt to remove subscription: {site_dir}", file=sys.stderr)
         return jsonify({"error": "Authentication required"}), 403
 
+    # Validate format
     if not (len(site_dir) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in site_dir)):
         print(f"Invalid site directory format in removal request: {site_dir}", file=sys.stderr)
         return jsonify({"error": "Invalid subscription identifier format."}), 400
 
+    # Construct path and perform security check
     base_dir = os.path.abspath(SUBSCRIPTIONS_DIR)
     target_path = os.path.abspath(os.path.join(base_dir, site_dir))
 
+    # Check if the resolved path is still within the intended base directory
     if not target_path.startswith(base_dir + os.sep):
         print(f"SECURITY ALERT: Path traversal attempt detected in remove_subscription for: {site_dir} (Resolved: {target_path})", file=sys.stderr)
         return jsonify({"error": "Invalid subscription identifier."}), 400
@@ -1424,7 +1542,8 @@ def remove_subscription(site_dir):
             print(f"Removed subscription directory: {target_path}")
             return jsonify({"success": True, "message": f"Subscription {site_dir}.onion removed."})
         except FileNotFoundError:
-            print(f"Subscription directory not found during removal attempt: {target_path}", file=sys.stderr)
+            # Should not happen if os.path.isdir was true, but handle defensively
+            print(f"Subscription directory not found during removal attempt (race condition?): {target_path}", file=sys.stderr)
             return jsonify({"error": "Subscription not found."}), 404
         except PermissionError:
              print(f"Permission error removing subscription directory: {target_path}", file=sys.stderr)
@@ -1440,37 +1559,52 @@ def initialize_app():
     """Create necessary directories, load config, and start Tor service."""
     global SITE_NAME, onion_address
 
-    print("Initializing Blitter Node...")
+    print(f"Initializing Blitter Node v{APP_VERSION} (Protocol: {PROTOCOL_VERSION})...")
+    # Create necessary directories
     os.makedirs(SUBSCRIPTIONS_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
+    # Ensure static dir exists relative to script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     static_dir = os.path.join(script_dir, 'static')
     os.makedirs(static_dir, exist_ok=True)
 
+    # Check for logo file
     logo_path = os.path.join(static_dir, 'logo_128.png')
     if not os.path.exists(logo_path):
-         print(f"Warning: Logo file not found at {logo_path}.", file=sys.stderr)
+         print(f"Warning: Logo file not found at {logo_path}. Ensure 'static/logo_128.png' exists.", file=sys.stderr)
 
     print(f"Directories checked/created: {SUBSCRIPTIONS_DIR}, {KEYS_DIR}, {LOG_DIR}, static")
 
+    # Initialize secret word file if it doesn't exist
     secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
     if not os.path.exists(secret_file_path):
         try:
             save_json(secret_file_path, {"secret_word": "changeme"})
             print(f'Default secret word file created at {secret_file_path}.')
             print("***************************************************************************", file=sys.stderr)
-            print("IMPORTANT: Default secret word 'changeme' set.", file=sys.stderr)
+            print("IMPORTANT: Default secret word 'changeme' set. Change this for security!", file=sys.stderr)
+            print(f"Edit the file: {secret_file_path}", file=sys.stderr)
             print("***************************************************************************", file=sys.stderr)
         except Exception as e:
             print(f"FATAL ERROR: Could not create secret word file at {secret_file_path}: {e}", file=sys.stderr)
             sys.exit(1)
     else:
+        # Check if readable
         try:
             secret_data = load_json(secret_file_path)
+            if not secret_data or 'secret_word' not in secret_data:
+                 print(f"Warning: Secret word file {secret_file_path} exists but is invalid or empty.", file=sys.stderr)
+            elif secret_data['secret_word'] == 'changeme':
+                 print("***************************************************************************", file=sys.stderr)
+                 print("WARNING: Using default secret word 'changeme'. Change this for security!", file=sys.stderr)
+                 print(f"Edit the file: {secret_file_path}", file=sys.stderr)
+                 print("***************************************************************************", file=sys.stderr)
+
         except Exception as e:
              print(f"Warning: Could not read or parse secret word file {secret_file_path}: {e}", file=sys.stderr)
 
+    # Initialize profile file if it doesn't exist or is invalid
     if not os.path.exists(PROFILE_FILE):
         print(f"Profile file '{PROFILE_FILE}' not found, creating default.")
         save_json(PROFILE_FILE, {
@@ -1485,6 +1619,7 @@ def initialize_app():
               print(f"Warning: Profile file '{PROFILE_FILE}' is empty or invalid. Resetting to default.", file=sys.stderr)
               save_json(PROFILE_FILE, {"nickname": "User", "location": "", "description": "My Blitter profile.", "email": "", "website": ""})
 
+    # Initialize feed file if it doesn't exist or is invalid
     if not os.path.exists(FEED_FILE):
         print(f"Feed file '{FEED_FILE}' not found, creating empty feed.")
         save_json(FEED_FILE, [])
@@ -1496,11 +1631,14 @@ def initialize_app():
         else:
              print(f"Feed file found: {FEED_FILE}")
 
+    # --- Tor Setup ---
     if not STEM_AVAILABLE:
+        print("\n--- Tor Integration Disabled ---")
         print("Skipping Tor setup because 'stem' library is not installed.")
+        print("Install it using: pip install stem")
         SITE_NAME = "tor_disabled"
         onion_address = None
-        return
+        return # Skip Tor setup if stem is not available
 
     print("\n--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
@@ -1512,7 +1650,7 @@ def initialize_app():
                 print(f"--- Tor Onion Service setup successful. Site Name: {SITE_NAME} ---")
             else:
                 print("--- Tor Onion Service setup failed. ---", file=sys.stderr)
-                SITE_NAME = "tor_failed"
+                SITE_NAME = "tor_failed" # Keep specific failure reason
                 onion_address = None
         else:
             print(f"Failed to extract key blob from {onion_dir}.", file=sys.stderr)
@@ -1523,15 +1661,18 @@ def initialize_app():
         SITE_NAME = "tor_no_key"
         onion_address = None
 
+    # Warning if Tor setup failed
     if SITE_NAME.startswith("tor_"):
          print("\n*****************************************************", file=sys.stderr)
          print(f"WARNING: Tor setup did not complete successfully (Status: {SITE_NAME}).", file=sys.stderr)
          print("The application will run, but might not be accessible via Tor", file=sys.stderr)
          print("and the site name used for posts may be incorrect.", file=sys.stderr)
          print("Ensure Tor service is running, configured with ControlPort 9051", file=sys.stderr)
-         print("and a valid key exists in the 'keys' directory.", file=sys.stderr)
+         print("and a valid v3 key exists in the 'keys' directory.", file=sys.stderr)
+         print("Check Tor logs (usually /var/log/tor/log or similar) for details.", file=sys.stderr)
          print("*****************************************************\n", file=sys.stderr)
 
+    # Display passphrase if setup was potentially successful
     if onion_dir and not SITE_NAME.startswith("tor_"):
         try:
             secret_word = None
@@ -1540,37 +1681,48 @@ def initialize_app():
                 secret_word = secret_word_data.get("secret_word")
 
             if secret_word:
-                 print(f'Secret word is: {secret_word}' ) 
+                 print(f'Using secret word from {secret_file_path} to derive passphrase.')
                  passphrase_words = get_passphrase(onion_dir, secret_word)
                  passphrase = " ".join(passphrase_words)
-                 print(f'--- Passphrase for local user is: "{passphrase}" ---')
+                 print("\n------------------------------------------------------")
+                 print(f'--- Passphrase for local user login is: "{passphrase}" ---')
+                 print("------------------------------------------------------\n")
             else:
-                print("--- Cannot display passphrase: Could not read secret word from file. ---", file=sys.stderr)
+                print("\n--- Cannot display passphrase: Could not read secret word from file. ---", file=sys.stderr)
         except FileNotFoundError:
-             print(f"--- Cannot display passphrase: Necessary file not found (key or secret word). ---", file=sys.stderr)
+             print(f"\n--- Cannot display passphrase: Necessary file not found (key or secret word). ---", file=sys.stderr)
         except Exception as e:
-            print(f"--- Warning: Error generating or displaying passphrase: {e} ---", file=sys.stderr)
+            print(f"\n--- Warning: Error generating or displaying passphrase: {e} ---", file=sys.stderr)
     elif onion_dir:
-         print("--- Cannot display passphrase due to Tor setup issue. ---", file=sys.stderr)
+         print("\n--- Cannot display passphrase due to Tor setup issue. ---", file=sys.stderr)
     else:
-        print("--- Cannot display passphrase as Tor key directory was not found. ---", file=sys.stderr)
+        print("\n--- Cannot display passphrase as Tor key directory was not found. ---", file=sys.stderr)
 
 if __name__ == '__main__':
+    # Set exit flag attribute for timer check
+    sys.is_exiting = False
+
     initialize_app()
 
-    print("\n--- Starting initial background fetch cycle ---")
-    initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
-    initial_fetch_thread.start()
-
-    print(f"\n--- Starting Flask server ---\nSite: '{onion_address or SITE_NAME}'")
-    print(f"Listening on http://{FLASK_HOST}:{FLASK_PORT}")
-    if onion_address:
-        print(f"Access via Tor at: http://{onion_address}")
+    if not SITE_NAME.startswith("tor_"):
+        print("\n--- Starting initial background fetch cycle ---")
+        # Start the first fetch cycle in a separate thread
+        # Subsequent cycles are scheduled by the run_fetch_cycle function itself
+        initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
+        initial_fetch_thread.start()
     else:
-         print("Access via Tor at: N/A (Setup incomplete/failed/disabled)")
+        print("\n--- Skipping initial background fetch due to Tor setup issue ---")
+
+    print(f"\n--- Starting Flask server ---")
+    if onion_address:
+        print(f"Site Address: http://{onion_address}")
+    else:
+        print(f"Site Address: N/A (Tor Status: {SITE_NAME})")
+    print(f"Local Access: http://{FLASK_HOST}:{FLASK_PORT}")
     print("Press Ctrl+C to stop.")
 
     try:
+        # Run Flask app (use_reloader=False is important with background threads/Tor)
         app.run(debug=False, host=FLASK_HOST, port=FLASK_PORT, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
          print("\nCtrl+C received, shutting down...")
@@ -1581,5 +1733,9 @@ if __name__ == '__main__':
          import traceback
          traceback.print_exc()
     finally:
+         # Set the flag BEFORE calling cleanup to prevent timer rescheduling
+         print("\nInitiating shutdown sequence...")
          sys.is_exiting = True
+         # Explicitly call cleanup which now handles timer cancellation and executor shutdown
+         cleanup_tor_service()
          print("\nExiting Blitter Node.")
