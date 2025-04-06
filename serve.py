@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.1.17' 
-PROTOCOL_VERSION = "0002" # Version constants defined before imports for visibility
+APP_VERSION = '0.1.18' 
+PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
 import time
@@ -9,14 +9,14 @@ import sys  # Added for stderr
 import base64  # Added for key encoding
 import atexit  # Added for cleanup
 import string
-import requests # Added for fetching subscriptions
-import concurrent.futures # Added for async fetching
-import threading # Added for background task feedback and timer
-import shutil # Added for directory removal
+import requests  # Added for fetching subscriptions
+import concurrent.futures  # Added for async fetching
+import threading  # Added for background task feedback and timer
+import shutil  # Added for directory removal
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
-import re # Added for parsing markdown
-import hashlib # For authentication
+import re  # Added for parsing markdown
+import hashlib  # For authentication
 
 # --- Tor Integration Imports ---
 try:
@@ -43,9 +43,9 @@ ONION_PORT = 80  # Virtual port the onion service will listen on
 FLASK_HOST = "127.0.0.1"  # Host Flask should listen on for Tor
 FLASK_PORT = 5000  # Port Flask should listen on for Tor
 MAX_MSG_LENGTH = 512
-SOCKS_PROXY = "socks5h://127.0.0.1:9050" # SOCKS proxy for Tor requests
-FETCH_TIMEOUT = 30 # Timeout in seconds for fetching subscription feeds
-FETCH_CYCLE = 300 # Automatic fetch interval in seconds
+SOCKS_PROXY = "socks5h://127.0.0.1:9050"  # SOCKS proxy for Tor requests
+FETCH_TIMEOUT = 30  # Timeout in seconds for fetching subscription feeds
+FETCH_CYCLE = 300  # Automatic fetch interval in seconds
 
 # --- Global Variables ---
 SITE_NAME = "tor_setup_pending"  # Placeholder until Tor setup
@@ -54,10 +54,10 @@ tor_controller = None
 tor_service_id = None
 onion_address = None
 # --- Fetching Globals ---
-fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5) # Executor for background fetches
-active_fetches = {} # Track active fetch tasks (optional for status, might be less useful with lock)
-fetch_lock = threading.Lock() # Lock to prevent concurrent manual/auto fetch cycles
-fetch_timer = None # Timer object for rescheduling background fetches
+fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)  # Executor for background fetches
+active_fetches = {}  # Track active fetch tasks (optional for status, might be less useful with lock)
+fetch_lock = threading.Lock()  # Lock to prevent concurrent manual/auto fetch cycles
+fetch_timer = None  # Timer object for rescheduling background fetches
 
 # --- New Template for Subscriptions Panel ---
 SUBSCRIPTIONS_TEMPLATE = """
@@ -140,56 +140,6 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
     except Exception as e:
         print(f"FATAL ERROR: Failed to load BIP-0039 wordlist '{filepath}': {e}", file=sys.stderr)
         sys.exit(1)
-
-def get_passphrase(service_dir, secret_word) -> list:
-    """
-    Reads the last 64 bytes of the binary file,
-    combines it with the secret_word and computes the SHA-256 hash,
-    truncates it to 66 bits (6 x 11 bits), and maps each 11-bit segment
-    to a word in the BIP-0039 word list.
-    """
-    bip39 = load_bip39_wordlist()
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
-    try:
-        with open(key_file_path, "rb") as f:
-            f.seek(-64, os.SEEK_END)
-            payload = f.read(64)
-            if len(payload) != 64:
-                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
-    except FileNotFoundError:
-        print(f"Error: Key file not found at {key_file_path}", file=sys.stderr)
-        raise
-    except IOError as e:
-        print(f"Error reading key file {key_file_path}: {e}", file=sys.stderr)
-        raise
-
-    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
-    digest_int = int.from_bytes(digest, byteorder="big")
-    truncated = digest_int >> (256 - 66)
-    words = []
-    for i in range(6):
-        shift = (6 - i - 1) * 11
-        index = (truncated >> shift) & 0x7FF
-        words.append(bip39[index])
-    return words
-
-def bmd2html(bmd_string):
-    """Converts a Blitter Markdown string to valid html"""
-    if not isinstance(bmd_string, str):
-        return ""
-    html_string = escape(bmd_string)
-    def replace_link(match):
-        text = match.group(1)
-        url = match.group(2)
-        if not url.startswith(('http://', 'https://')):
-            url = 'http://' + url
-        safe_url = escape(url)
-        return f'<a href="{safe_url}" target="_blank">{escape(text)}</a>'
-    html_string = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, html_string)
-    html_string = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', html_string)
-    html_string = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', html_string)
-    html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
-    return html_string
 
 def load_json(filename):
     """Loads JSON data from a file."""
@@ -327,6 +277,94 @@ def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
     len_field = f"{content_length:03d}"
     message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
     return message, timestamp
+
+def load_subscriptions():
+    """
+    Utility function to load subscription data and cached feed messages.
+    Returns a tuple: (subscriptions_with_nicknames, subscription_raw_feed, nicknames_map)
+    """
+    subscriptions_with_nicknames = []
+    subscription_raw_feed = []
+    nicknames_map = {}
+    try:
+        if os.path.isdir(SUBSCRIPTIONS_DIR):
+            subscription_dirs_list = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
+            for site_dir in subscription_dirs_list:
+                nickname = None
+                notes_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'notes.json')
+                notes_data = load_json(notes_file)
+                if notes_data and isinstance(notes_data, dict) and notes_data.get('nickname'):
+                    nickname = notes_data['nickname']
+                subscriptions_with_nicknames.append({'site': site_dir, 'nickname': nickname})
+                nicknames_map[site_dir] = nickname
+                cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
+                cached_data = load_json(cache_file) or []
+                if isinstance(cached_data, list):
+                    for msg_str in cached_data:
+                        parsed_msg = parse_message_string(msg_str)
+                        if parsed_msg and parsed_msg['site'] == site_dir:
+                            parsed_msg['is_own_post'] = False
+                            subscription_raw_feed.append(parsed_msg)
+                        elif parsed_msg:
+                            print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
+                elif cached_data is not None:
+                    print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
+    except Exception as e:
+         print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
+         subscriptions_with_nicknames = []
+         subscription_raw_feed = []
+         nicknames_map = {}
+    return subscriptions_with_nicknames, subscription_raw_feed, nicknames_map
+
+def bmd2html(bmd_string):
+    """Converts a Blitter Markdown string to valid html"""
+    if not isinstance(bmd_string, str):
+        return ""
+    html_string = escape(bmd_string)
+    def replace_link(match):
+        text = match.group(1)
+        url = match.group(2)
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+        safe_url = escape(url)
+        return f'<a href="{safe_url}" target="_blank">{escape(text)}</a>'
+    html_string = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, html_string)
+    html_string = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', html_string)
+    html_string = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', html_string)
+    html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
+    return html_string
+
+def get_passphrase(service_dir, secret_word) -> list:
+    """
+    Reads the last 64 bytes of the binary file,
+    combines it with the secret_word and computes the SHA-256 hash,
+    truncates it to 66 bits (6 x 11 bits), and maps each 11-bit segment
+    to a word in the BIP-0039 word list.
+    """
+    bip39 = load_bip39_wordlist()
+    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+    try:
+        with open(key_file_path, "rb") as f:
+            f.seek(-64, os.SEEK_END)
+            payload = f.read(64)
+            if len(payload) != 64:
+                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
+    except FileNotFoundError:
+        print(f"Error: Key file not found at {key_file_path}", file=sys.stderr)
+        raise
+    except IOError as e:
+        print(f"Error reading key file {key_file_path}: {e}", file=sys.stderr)
+        raise
+
+    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
+    digest_int = int.from_bytes(digest, byteorder="big")
+    truncated = digest_int >> (256 - 66)
+    words = []
+    for i in range(6):
+        shift = (6 - i - 1) * 11
+        index = (truncated >> shift) & 0x7FF
+        words.append(bip39[index])
+    return words
 
 # --- Tor Integration Functions ---
 
@@ -789,38 +827,8 @@ def index():
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
-    subscriptions_with_nicknames = []
-    subscription_raw_feed = []
-    nicknames_map = {}
-
-    try:
-        if os.path.isdir(SUBSCRIPTIONS_DIR):
-             subscription_dirs_list = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
-             for site_dir in subscription_dirs_list:
-                 nickname = None
-                 notes_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'notes.json')
-                 notes_data = load_json(notes_file)
-                 if notes_data and isinstance(notes_data, dict) and notes_data.get('nickname'):
-                     nickname = notes_data['nickname']
-                 subscriptions_with_nicknames.append({'site': site_dir, 'nickname': nickname})
-                 nicknames_map[site_dir] = nickname
-                 cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
-                 cached_data = load_json(cache_file) or []
-                 if isinstance(cached_data, list):
-                     for msg_str in cached_data:
-                         parsed_msg = parse_message_string(msg_str)
-                         if parsed_msg and parsed_msg['site'] == site_dir:
-                             parsed_msg['is_own_post'] = False
-                             subscription_raw_feed.append(parsed_msg)
-                         elif parsed_msg:
-                              print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
-                 elif cached_data is not None:
-                      print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
-    except Exception as e:
-         print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
-         subscriptions_with_nicknames = []
-         subscription_raw_feed = []
-         nicknames_map = {}
+    # Use the new utility function to load subscription data.
+    subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
 
     combined_feed = user_processed_feed + subscription_raw_feed
     try:
@@ -833,7 +841,6 @@ def index():
             post['nickname'] = nicknames_map.get(post['site'])
 
     profile_data = load_json(PROFILE_FILE) or {}
-
     user_feed_for_panel = sorted(user_processed_feed, key=lambda x: x['timestamp'], reverse=True)
 
     # Render the subscriptions panel content using the partial template
@@ -1350,37 +1357,8 @@ def subscriptions_panel():
                  print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
             else:
                  print(f"Warning: Skipping invalid message string from main feed '{FEED_FILE}': {msg_str[:100]}...", file=sys.stderr)
-    subscriptions_with_nicknames = []
-    subscription_raw_feed = []
-    nicknames_map = {}
-    try:
-        if os.path.isdir(SUBSCRIPTIONS_DIR):
-             subscription_dirs_list = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
-             for site_dir in subscription_dirs_list:
-                 nickname = None
-                 notes_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'notes.json')
-                 notes_data = load_json(notes_file)
-                 if notes_data and isinstance(notes_data, dict) and notes_data.get('nickname'):
-                     nickname = notes_data['nickname']
-                 subscriptions_with_nicknames.append({'site': site_dir, 'nickname': nickname})
-                 nicknames_map[site_dir] = nickname
-                 cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
-                 cached_data = load_json(cache_file) or []
-                 if isinstance(cached_data, list):
-                     for msg_str in cached_data:
-                         parsed_msg = parse_message_string(msg_str)
-                         if parsed_msg and parsed_msg['site'] == site_dir:
-                             parsed_msg['is_own_post'] = False
-                             subscription_raw_feed.append(parsed_msg)
-                         elif parsed_msg:
-                              print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
-                 elif cached_data is not None:
-                      print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
-    except Exception as e:
-         print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
-         subscriptions_with_nicknames = []
-         subscription_raw_feed = []
-         nicknames_map = {}
+    # Use the new utility function to load subscriptions.
+    subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
     combined_feed = user_processed_feed + subscription_raw_feed
     try:
         combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
