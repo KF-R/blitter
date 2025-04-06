@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.1.18' 
+APP_VERSION = '0.1.19' 
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
@@ -59,60 +59,6 @@ active_fetches = {}  # Track active fetch tasks (optional for status, might be l
 fetch_lock = threading.Lock()  # Lock to prevent concurrent manual/auto fetch cycles
 fetch_timer = None  # Timer object for rescheduling background fetches
 
-# --- New Template for Subscriptions Panel ---
-SUBSCRIPTIONS_TEMPLATE = """
-<h2>Timeline</h2>
-{% for post in combined_feed %}
-<div class="post-box {% if post.is_own_post %}own-post-highlight{% endif %}">
-    <div class="post-meta">
-        {% if post.is_own_post %}
-            <span class="nickname">{{ profile.nickname if profile else 'You' }}: </span>
-            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
-            {{ post.display_timestamp }}
-            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
-            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
-            {% endif %}
-            | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
-        {% else %}
-            {% if post.nickname %}
-                <span class="nickname">{{ post.nickname }}: </span>
-            {% endif %}
-            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
-            {{ post.display_timestamp }}
-            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
-            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
-            {% endif %}
-            | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
-        {% endif %}
-    </div>
-    <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
-</div>
-{% else %}
-<p>No messages found in timeline.</p>
-{% if subscriptions %}
-<p>
-  {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
-</p>
-{% endif %}
-{% endfor %}
-<hr style="border-color: #444; margin: 20px 0;">
-<h4>Subscribed Sites:</h4>
-<ul id="subscription-list">
-    {% for sub in subscriptions %}
-        <li>
-           {% if sub.nickname %}
-               <span class="nickname">{{ sub.nickname }}: </span>
-           {% endif %}
-           <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
-           {% if logged_in %}
-               <a href="#" class="remove-link" data-site-dir="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
-           {% endif %}
-        </li>
-    {% else %}
-        <li>No subscriptions added yet.</li>
-    {% endfor %}
-</ul>
-"""
 
 # --- Helper Functions ---
 
@@ -569,8 +515,9 @@ INDEX_TEMPLATE = """
         .content { display: flex; flex-wrap: wrap; padding: 10px; }
         .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
         .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
-        .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 15px; background-color: #2a2a2a; border-radius: 5px;}
-        .post-box.own-post-highlight { border: 2px solid #ffcc00; }
+        .subscriptions-header { font-size:24px; font-weight: bold; margin-bottom: 8px; }
+        .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 4px; background-color: #2a2a2a; border-radius: 5px;}
+        .post-box.own-post-highlight { border: 1px solid #ffcc00; }
         .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
         .post-meta a { color: #aaa; }
         .post-content { margin-top: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
@@ -608,8 +555,6 @@ INDEX_TEMPLATE = """
             <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
             <span id="site-name">{{ onion_address or site_name }}</span>
             <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
-            <br>
-            <span style="font-size: 0.8em;">{{ utc_time }}</span>
         </div>
     </div>
 
@@ -808,6 +753,63 @@ INDEX_TEMPLATE = """
 </html>
 """
 
+SUBSCRIPTIONS_TEMPLATE = """
+<div class="subscriptions-header">
+    Timeline 
+    <span style="font-size: 0.6em; margin-left:20px;">{{ utc_time }}</span>
+</div>
+{% for post in combined_feed %}
+<div class="post-box {% if post.is_own_post %}own-post-highlight{% endif %}">
+    <div class="post-meta">
+        {% if post.is_own_post %}
+            <span class="nickname">{{ profile.nickname if profile else 'You' }}: </span>
+            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+            {{ post.display_timestamp }}
+            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
+            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
+            {% endif %}
+            | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
+        {% else %}
+            {% if post.nickname %}
+                <span class="nickname">{{ post.nickname }}: </span>
+            {% endif %}
+            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+            {{ post.display_timestamp }}
+            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
+            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
+            {% endif %}
+            | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
+        {% endif %}
+    </div>
+    <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
+</div>
+{% else %}
+<p>No messages found in timeline.</p>
+{% if subscriptions %}
+<p>
+  {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
+</p>
+{% endif %}
+{% endfor %}
+<hr style="border-color: #444; margin: 20px 0;">
+<h4>Subscribed Sites:</h4>
+<ul id="subscription-list">
+    {% for sub in subscriptions %}
+        <li>
+           {% if sub.nickname %}
+               <span class="nickname">{{ sub.nickname }}: </span>
+           {% endif %}
+           <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
+           {% if logged_in %}
+               <a href="#" class="remove-link" data-site-dir="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
+           {% endif %}
+        </li>
+    {% else %}
+        <li>No subscriptions added yet.</li>
+    {% endfor %}
+</ul>
+"""
+
 # --- Flask Routes ---
 
 @app.route('/')
@@ -846,6 +848,7 @@ def index():
     # Render the subscriptions panel content using the partial template
     subscriptions_panel = render_template_string(
         SUBSCRIPTIONS_TEMPLATE,
+        utc_time=utc_now,
         combined_feed=combined_feed,
         subscriptions=subscriptions_with_nicknames,
         logged_in=is_logged_in(),
@@ -860,7 +863,6 @@ def index():
         logged_in=is_logged_in(),
         site_name=SITE_NAME,
         onion_address=onion_address,
-        utc_time=utc_now,
         protocol_version=PROTOCOL_VERSION,
         app_version=APP_VERSION,
         profile=profile_data,
@@ -1368,8 +1370,10 @@ def subscriptions_panel():
         if not post.get('is_own_post', False):
             post['nickname'] = nicknames_map.get(post['site'])
     profile_data = load_json(PROFILE_FILE) or {}
+    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     return render_template_string(
         SUBSCRIPTIONS_TEMPLATE,
+        utc_time=utc_now,
         combined_feed=combined_feed,
         subscriptions=subscriptions_with_nicknames,
         logged_in=is_logged_in(),
