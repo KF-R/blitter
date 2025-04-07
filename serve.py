@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.1.21' 
+APP_VERSION = '0.2.0' 
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
@@ -46,6 +46,7 @@ MAX_MSG_LENGTH = 512
 SOCKS_PROXY = "socks5h://127.0.0.1:9050"  # SOCKS proxy for Tor requests
 FETCH_TIMEOUT = 30  # Timeout in seconds for fetching subscription feeds
 FETCH_CYCLE = 300  # Automatic fetch interval in seconds
+NULL_REPLY_ADDRESS = '0'*56 + ':' + '0'*16
 
 # --- Global Variables ---
 SITE_NAME = "tor_setup_pending"  # Placeholder until Tor setup
@@ -160,9 +161,8 @@ def parse_message_string(msg_str):
     if len(site) != 56 or not all(c in string.ascii_lowercase + string.digits + '234567' for c in site): return None
     if len(timestamp) != 16 or not all(c in string.hexdigits for c in timestamp): return None
     reply_parts = reply_id.split(':')
-    if len(reply_parts) != 2 or len(reply_parts[0]) != 57 or len(reply_parts[1]) != 16:
-         if reply_id != '0'*57 + ':' + '0'*16:
-            return None
+    if len(reply_parts) != 2: return None
+    if len(reply_id) != len(NULL_REPLY_ADDRESS): return None
     if len(expiration) != 16 or not all(c in string.hexdigits for c in expiration): return None
     if len(flag_int) != 16 or not all(c in string.hexdigits for c in flag_int): return None
     if len(length_field) != 3 or not length_field.isdigit(): return None
@@ -188,7 +188,7 @@ def parse_message_string(msg_str):
         'raw_message': msg_str
     }
 
-def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
+def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
     """Creates a message string:
     |<protocol_version>|<sitename>|<timestamp>|<reply-id>|<expiration>|<flag_int>|<len>|<content>|
     """
@@ -214,16 +214,11 @@ def create_message_string(content, reply_id='0'*57 + ':' + '0'*16):
     expiration = 'f'*16
     flag_int = '0'*16
 
-    if not isinstance(reply_id, str):
-         reply_id = '0'*57 + ':' + '0'*16
-    else:
-        reply_parts = reply_id.split(':')
-        if not (len(reply_parts) == 2 and len(reply_parts[0]) == 57 and len(reply_parts[1]) == 16):
-             if reply_id != '0'*57 + ':' + '0'*16:
-                  print(f"Warning: Invalid reply_id format '{reply_id}'. Using default.", file=sys.stderr)
-                  reply_id = '0'*57 + ':' + '0'*16
-
     len_field = f"{content_length:03d}"
+
+    if not reply_id:
+        reply_id=NULL_REPLY_ADDRESS
+
     message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
     return message, timestamp
 
@@ -256,6 +251,8 @@ def load_subscriptions():
                                 subscription_raw_feed.append(parsed_msg)
                             else:
                                 print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
+                        else:
+                            print(f"Noped: {msg_str}")
                 elif cached_data is not None:
                     print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
     except Exception as e:
@@ -575,9 +572,6 @@ INDEX_TEMPLATE = """
             <div class="post-box">
                 <div class="post-meta">
                     Posted: {{ post.display_timestamp }}
-                    {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
-                     | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
-                    {% endif %}
                      | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
                      | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
                 </div>
@@ -748,12 +742,9 @@ SUBSCRIPTIONS_TEMPLATE = """
 <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
     <div class="post-meta">
         {% if post.site == site_name %}
-            <span class="nickname">{{ profile.nickname if profile else 'You' }}: </span>
+            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
-            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
-            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
-            {% endif %}
             | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
         {% else %}
             {% if post.nickname %}
@@ -761,9 +752,6 @@ SUBSCRIPTIONS_TEMPLATE = """
             {% endif %}
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
-            {% if post.reply_id and post.reply_id != '0'*57 + ':' + '0'*16 %}
-            | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
-            {% endif %}
             | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
         {% endif %}
         | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
@@ -867,7 +855,59 @@ VIEW_THREAD_TEMPLATE="""
         {{ header_section|safe }}
     </div>
     <div class="thread-view">
-        {{ thread_view|safe }}
+        {% if parent_post is string %}
+            {{ parent_post|safe }}
+        {% elif parent_post %}
+            <div class="post-box {% if parent_post.site == site_name %}own-post-highlight{% endif %}">
+                <div class="post-meta">
+                    {% if parent_post.site == site_name %}
+                        <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                    {% else %}
+                        {% if parent_post.nickname %}
+                            <span class="nickname">{{ parent_post.nickname }}: </span>
+                        {% endif %}
+                    {% endif %}
+                    <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
+                    {{ parent_post.display_timestamp }}
+                    | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
+                    | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}" target="_blank" title="View">Thread</a>
+                </div>
+                <div class="post-content">{{ bmd2html(parent_post.display_content) | safe }}</div>
+            </div>
+        {% endif %}
+        <hr/>
+        <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}">
+            <div class="post-meta">
+                {% if selected_post.site == site_name %}
+                    <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                    <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
+                    {{ selected_post.display_timestamp }}
+                    | <a href="{{ url_for('view_message', timestamp=selected_post.timestamp) }}" title="View raw message format">Raw</a>
+                {% else %}
+                    {% if selected_post.nickname %}
+                        <span class="nickname">{{ selected_post.nickname }}: </span>
+                    {% endif %}
+                    <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
+                    {{ selected_post.display_timestamp }}
+                    | <a href="http://{{ selected_post.site }}.onion/{{ selected_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
+                {% endif %}
+                | <a href="{{ url_for('view_thread', message_id=selected_post.site + ':' + selected_post.timestamp) }}" title="View thread">Thread</a>
+            </div>
+            <div class="post-content">{{ bmd2html(selected_post.display_content) | safe }}</div>
+        </div>
+        <hr/>
+        {{ thread_section|safe }}
+        <hr/>
+        {% if logged_in %}
+        <form method="post" action="{{ url_for('post') }}">
+            <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
+            <input type="text" name="reply_id" value="{{ selected_post.site }}:{{ selected_post.timestamp }}" readonly>
+            <input type="submit" value="Post" style="margin: 5px;">
+            <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
+            <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
+        </form>
+        <hr/>
+        {% endif %}
     </div>
     <div class="footer">
         {{ footer_section|safe }}
@@ -881,9 +921,9 @@ VIEW_THREAD_TEMPLATE="""
 @app.route('/thread/<string:message_id>')
 def view_thread(message_id):
 
-    if ':' not in message_id:
-        abort(400, description="Invalid message id format.")
+    profile_data = load_json(PROFILE_FILE) or {}
 
+    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):   abort(400, description="Invalid message id format.")
     message_site, message_timestamp = message_id.split(':')
 
     if not is_valid_onion_address(message_site):
@@ -892,53 +932,10 @@ def view_thread(message_id):
     if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
         abort(400, description="Invalid timestamp format.")
 
-    thread_section = ""
-    # Load all messages as a combined feed of user's (feed.json) and all subs (feedcache.json for each sub)
-    # If selected message (message_id) is has a non-zero `reply-to` field:
-    #   If parent message (the reply-to value) exists in combined feed: 
-    #       Show that parent message
-    #   Else: show link to live parent message by converting its ID ('site:timestamp') to a valid Blitter URL (e.g. 'http://blittersiteaddress.onion/<timestamp>') 
-    # Show selected message, highlighted
-    # For each message in the combined feed that has a `reply-to` value corresponding to this message:
-    #   Show this reply message
-    #   For each message in the combined feed that has a `reply-to` value corresponding to this reply: recursively continue showing messages and their replies
-    # If logged in, show a post form with a visible `reply-to` field automatically set to the value of the selected message (message_id). This field can not be manually edited.
-    # (Other than the reply-to field, the post box has the same characteristics to the one on the index page i.e. dynamic character counter, character limit, newline restriction, validation etc.)
+    thread_section = "THREAD:"
 
-    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    profile_data = load_json(PROFILE_FILE) or {}
-
-    if True: # Replace with condition confirming that message_id exists in combined feed
-
-        header_section = render_template_string(
-            HEADER_TEMPLATE,
-            logged_in=is_logged_in(),
-            profile=profile_data,
-            site_name=SITE_NAME,
-            onion_address=onion_address,
-        )
-
-        footer_section = render_template_string(
-            FOOTER_TEMPLATE,
-            protocol_version=PROTOCOL_VERSION,
-            app_version=APP_VERSION
-        )
-
-        view_thread = render_template_string(
-            VIEW_THREAD_TEMPLATE,
-            header_section=header_section,
-            utc_now=utc_now,
-            thread_section=thread_section,
-            footer_section=footer_section,
-            site_name=SITE_NAME
-        )         
-
-        return(view_thread)
-   
-    abort(404, description="Message not found.")
-
-@app.route('/')
-def index():
+    local_message = False # Whether this selected post is in the local feed
+    # Assemble combined feed
     user_feed_data = load_json(FEED_FILE) or []
     user_processed_feed = []
     if isinstance(user_feed_data, list):
@@ -949,6 +946,97 @@ def index():
                     user_processed_feed.append(parsed_msg)
                 else:
                     print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
+
+    _, subscription_raw_feed, nicknames_map = load_subscriptions()
+    combined_feed = user_processed_feed + subscription_raw_feed
+    try:
+        combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
+    except Exception as e:
+        print(f"Error sorting combined feed: {e}", file=sys.stderr)
+    for post in combined_feed:
+        if post['site'] != SITE_NAME:
+            post['nickname'] = nicknames_map.get(post['site'])
+        else:
+            post['nickname'] = profile_data['nickname']
+
+    for post in combined_feed:
+        if post['site'] == message_site and post['timestamp'] == message_timestamp:
+            # Message is stored locally
+
+            # Display parent if exists
+            if post['reply_id'] != NULL_REPLY_ADDRESS:
+                # Display parent
+                parent_post = ""
+
+                for parent in combined_feed:
+                    if parent['site'] + ':' + parent['timestamp'] == post['reply_id']:
+                        # parent_post = f"{parent['site']} ({parent['nickname']}) said: {parent['content']}"
+                        parent_post = parent
+                        break
+                        
+                if parent_post == "":
+                    # Parent post is not local
+                    parent_post = f"Parent post is not cached locally: http://{parent['site']}.onion/thread/{parent['timestamp']}"
+                
+            else:
+                parent_post = "This post is not a reply. It is an original bleet."    
+
+            # Display message
+            selected_post = post
+
+            # Display children if exist
+            thread_section += 'children (replies) here'
+            # TODO: Recursively find children, grandchildren (deeper replies) building a tree of posts to display
+
+    if not selected_post:
+        abort(404, description="Message not stored or cached on this Blitter site.")
+
+    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+    header_section = render_template_string(
+        HEADER_TEMPLATE,
+        logged_in=is_logged_in(),
+        profile=profile_data,
+        site_name=SITE_NAME,
+        onion_address=onion_address,
+    )
+
+    footer_section = render_template_string(
+        FOOTER_TEMPLATE,
+        protocol_version=PROTOCOL_VERSION,
+        app_version=APP_VERSION
+    )
+
+    view_thread = render_template_string(
+        VIEW_THREAD_TEMPLATE,
+        header_section=header_section,
+        utc_now=utc_now,
+        logged_in=is_logged_in(),
+        parent_post=parent_post,
+        selected_post=selected_post,
+        thread_section=thread_section,
+        footer_section=footer_section,
+        site_name=SITE_NAME,
+        profile=profile_data,
+        MAX_MSG_LENGTH=MAX_MSG_LENGTH,
+        bmd2html=bmd2html
+    )         
+
+    return(view_thread)
+
+@app.route('/')
+def index():
+    user_feed_data = load_json(FEED_FILE) or []
+    user_processed_feed = []
+    if isinstance(user_feed_data, list):
+        for msg_str in user_feed_data:
+            parsed_msg = parse_message_string(msg_str)
+            if parsed_msg:
+                if parsed_msg['site'] == SITE_NAME:
+                    user_processed_feed.append(parsed_msg)
+                else:
+                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
+
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
     profile_data = load_json(PROFILE_FILE) or {}
@@ -1075,7 +1163,7 @@ def post():
     if not content or not content.strip():
          print("Post rejected: Empty content.")
          return redirect(url_for('index'))
-    new_message_str, timestamp = create_message_string(content)
+    new_message_str, timestamp = create_message_string(content, request.form.get('reply_id'))
     if not new_message_str:
         print("Error: Failed to create message string (check logs). Post rejected.", file=sys.stderr)
         return redirect(url_for('index'))
@@ -1479,6 +1567,7 @@ def subscriptions_panel():
     for post in combined_feed:
         if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
+ 
     profile_data = load_json(PROFILE_FILE) or {}
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     return render_template_string(
@@ -1643,3 +1732,4 @@ if __name__ == '__main__':
          sys.is_exiting = True
          cleanup_tor_service()
          print("\nExiting Blitter Node.")
+
