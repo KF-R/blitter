@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.1.19' 
+APP_VERSION = '0.1.21' 
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
@@ -59,8 +59,11 @@ active_fetches = {}  # Track active fetch tasks (optional for status, might be l
 fetch_lock = threading.Lock()  # Lock to prevent concurrent manual/auto fetch cycles
 fetch_timer = None  # Timer object for rescheduling background fetches
 
-
 # --- Helper Functions ---
+
+def is_valid_onion_address(addr):
+    # Matches 56 characters from a-z and 2-7, optionally followed by ".onion"
+    return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
 
 def load_bip39_wordlist(filename='bip39_english.txt'):
     """
@@ -248,11 +251,11 @@ def load_subscriptions():
                 if isinstance(cached_data, list):
                     for msg_str in cached_data:
                         parsed_msg = parse_message_string(msg_str)
-                        if parsed_msg and parsed_msg['site'] == site_dir:
-                            parsed_msg['is_own_post'] = False
-                            subscription_raw_feed.append(parsed_msg)
-                        elif parsed_msg:
-                            print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
+                        if parsed_msg:
+                            if parsed_msg['site'] == site_dir:
+                                subscription_raw_feed.append(parsed_msg)
+                            else:
+                                print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
                 elif cached_data is not None:
                     print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
     except Exception as e:
@@ -537,25 +540,7 @@ INDEX_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <span class="logo">
-            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
-            Blitter
-        </span>
-        <span class="controls">
-            {% if logged_in %}
-                <a href="{{ url_for('profile') }}">Profile</a> |
-                <button id="fetch-subscriptions-btn" title="Fetch subscriptions">Fetch</button> |
-                <button id="add-subscription-btn" title="Add subscription">Add</button> |
-                <a href="{{ url_for('logout') }}">Logout</a>
-            {% else %}
-                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
-            {% endif %}
-        </span>
-        <div class="site-name">
-            <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
-            <span id="site-name">{{ onion_address or site_name }}</span>
-            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
-        </div>
+        {{ header_section|safe}}
     </div>
 
     {% if site_name == 'tor_setup_pending' and onion_address == None %}
@@ -594,6 +579,7 @@ INDEX_TEMPLATE = """
                      | Replying to: <a href="#" title="Link to replied message (Not Implemented)">{{ post.reply_id }}</a>
                     {% endif %}
                      | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
+                     | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
                 </div>
                 <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
             </div>
@@ -608,7 +594,7 @@ INDEX_TEMPLATE = """
     </div>
 
     <div class="footer">
-        <p style="text-align: center; font-size: 0.8em;">Blitter Node v{{ app_version }} | Protocol v{{ protocol_version }}</p>
+        {{ footer_section|safe }}
     </div>
 
     <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:460px;">
@@ -759,9 +745,9 @@ SUBSCRIPTIONS_TEMPLATE = """
     <span style="font-size: 0.6em; margin-left:20px;">{{ utc_time }}</span>
 </div>
 {% for post in combined_feed %}
-<div class="post-box {% if post.is_own_post %}own-post-highlight{% endif %}">
+<div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
     <div class="post-meta">
-        {% if post.is_own_post %}
+        {% if post.site == site_name %}
             <span class="nickname">{{ profile.nickname if profile else 'You' }}: </span>
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
@@ -780,6 +766,7 @@ SUBSCRIPTIONS_TEMPLATE = """
             {% endif %}
             | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
         {% endif %}
+        | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
     </div>
     <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
 </div>
@@ -810,7 +797,145 @@ SUBSCRIPTIONS_TEMPLATE = """
 </ul>
 """
 
+HEADER_TEMPLATE = """
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
+            Blitter
+        </span>
+        <span class="controls">
+            {% if logged_in %}
+                <a href="{{ url_for('profile') }}">Profile</a> |
+                <button id="fetch-subscriptions-btn" title="Fetch subscriptions">Fetch</button> |
+                <button id="add-subscription-btn" title="Add subscription">Add</button> |
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% else %}
+                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
+            {% endif %}
+        </span>
+        <div class="site-name">
+            {% if onion_address %}
+                    {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
+            {% else %}
+                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
+            {% endif %}
+
+            <span id="site-name">{{ onion_address or site_name }}</span>
+            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
+        </div>
+"""
+
+FOOTER_TEMPLATE="""
+       <p style="text-align: center; font-size: 0.8em;">Blitter Node v{{ app_version }} | Protocol v{{ protocol_version }}</p>
+ """
+
+VIEW_THREAD_TEMPLATE="""
+<!doctype html>
+<html>
+<head>
+    <title>Blitter Feed - {{ site_name }}</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; background-color: #222; color: #eee; }
+        .header, .footer { background-color: #333; padding: 10px; overflow: hidden; }
+        .header .logo { float: left; font-weight: bold; display: flex; align-items: center; }
+        .header .site-name { text-align: center; font-size: 1.1em; margin: 0 180px; line-height: 1.5em; }
+        .header .controls { float: right; }
+        .content { display: flex; flex-wrap: wrap; padding: 10px; }
+        .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
+        .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
+        .subscriptions-header { font-size:24px; font-weight: bold; margin-bottom: 8px; }
+        .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 4px; background-color: #2a2a2a; border-radius: 5px;}
+        .post-box.own-post-highlight { border: 1px solid #ffcc00; }
+        .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
+        .post-meta a { color: #aaa; }
+        .post-content { margin-top: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
+         textarea { width: 95%; background-color: #444; color: #eee; border: 1px solid #555; padding: 5px; font-family: inherit;}
+         input[type=submit], button { padding: 5px 10px; background-color: #555; border: none; color: #eee; cursor: pointer; border-radius: 3px; margin-left: 5px; }
+         button:disabled { background-color: #444; color: #888; cursor: not-allowed;}
+         a { color: #7af; text-decoration: none; }
+         a:hover { text-decoration: underline; }
+         .error { color: red; font-weight: bold; }
+         .site-info { margin-left: 10px; font-size: 0.9em; }
+         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
+         .location { color: #ccc; }
+         .subscription-site-name { font-weight: bold; color: #aaa; }
+         .remove-link { margin-left: 5px; color: #f88; font-size: 0.9em; cursor: pointer; }
+         #status-message { margin-top: 10px; padding: 5px; background-color: #444; border-radius: 3px; display: none; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        {{ header_section|safe }}
+    </div>
+    <div class="thread-view">
+        {{ thread_view|safe }}
+    </div>
+    <div class="footer">
+        {{ footer_section|safe }}
+    </div>
+    </body>
+</html>
+"""
+
 # --- Flask Routes ---
+
+@app.route('/thread/<string:message_id>')
+def view_thread(message_id):
+
+    if ':' not in message_id:
+        abort(400, description="Invalid message id format.")
+
+    message_site, message_timestamp = message_id.split(':')
+
+    if not is_valid_onion_address(message_site):
+        abort(400, description="Invalid blitter (onion) address.")
+
+    if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
+        abort(400, description="Invalid timestamp format.")
+
+    thread_section = ""
+    # Load all messages as a combined feed of user's (feed.json) and all subs (feedcache.json for each sub)
+    # If selected message (message_id) is has a non-zero `reply-to` field:
+    #   If parent message (the reply-to value) exists in combined feed: 
+    #       Show that parent message
+    #   Else: show link to live parent message by converting its ID ('site:timestamp') to a valid Blitter URL (e.g. 'http://blittersiteaddress.onion/<timestamp>') 
+    # Show selected message, highlighted
+    # For each message in the combined feed that has a `reply-to` value corresponding to this message:
+    #   Show this reply message
+    #   For each message in the combined feed that has a `reply-to` value corresponding to this reply: recursively continue showing messages and their replies
+    # If logged in, show a post form with a visible `reply-to` field automatically set to the value of the selected message (message_id). This field can not be manually edited.
+    # (Other than the reply-to field, the post box has the same characteristics to the one on the index page i.e. dynamic character counter, character limit, newline restriction, validation etc.)
+
+    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    profile_data = load_json(PROFILE_FILE) or {}
+
+    if True: # Replace with condition confirming that message_id exists in combined feed
+
+        header_section = render_template_string(
+            HEADER_TEMPLATE,
+            logged_in=is_logged_in(),
+            profile=profile_data,
+            site_name=SITE_NAME,
+            onion_address=onion_address,
+        )
+
+        footer_section = render_template_string(
+            FOOTER_TEMPLATE,
+            protocol_version=PROTOCOL_VERSION,
+            app_version=APP_VERSION
+        )
+
+        view_thread = render_template_string(
+            VIEW_THREAD_TEMPLATE,
+            header_section=header_section,
+            utc_now=utc_now,
+            thread_section=thread_section,
+            footer_section=footer_section,
+            site_name=SITE_NAME
+        )         
+
+        return(view_thread)
+   
+    abort(404, description="Message not found.")
 
 @app.route('/')
 def index():
@@ -819,52 +944,39 @@ def index():
     if isinstance(user_feed_data, list):
          for msg_str in user_feed_data:
             parsed_msg = parse_message_string(msg_str)
-            if parsed_msg and parsed_msg['site'] == SITE_NAME:
-                 parsed_msg['is_own_post'] = True
-                 user_processed_feed.append(parsed_msg)
-            elif parsed_msg:
-                 print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
-            else:
-                 print(f"Warning: Skipping invalid message string from main feed '{FEED_FILE}': {msg_str[:100]}...", file=sys.stderr)
-
+            if parsed_msg:
+                if parsed_msg['site'] == SITE_NAME:
+                    user_processed_feed.append(parsed_msg)
+                else:
+                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-
-    # Use the new utility function to load subscription data.
-    subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
-
-    combined_feed = user_processed_feed + subscription_raw_feed
-    try:
-        combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
-    except Exception as e:
-        print(f"Error sorting combined feed: {e}", file=sys.stderr)
-
-    for post in combined_feed:
-        if not post.get('is_own_post', False):
-            post['nickname'] = nicknames_map.get(post['site'])
 
     profile_data = load_json(PROFILE_FILE) or {}
     user_feed_for_panel = sorted(user_processed_feed, key=lambda x: x['timestamp'], reverse=True)
 
-    # Render the subscriptions panel content using the partial template
-    subscriptions_panel = render_template_string(
-        SUBSCRIPTIONS_TEMPLATE,
-        utc_time=utc_now,
-        combined_feed=combined_feed,
-        subscriptions=subscriptions_with_nicknames,
+    header_section = render_template_string(
+        HEADER_TEMPLATE,
         logged_in=is_logged_in(),
         profile=profile_data,
-        bmd2html=bmd2html
+        site_name=SITE_NAME,
+        onion_address=onion_address,
+    )
+
+    footer_section = render_template_string(
+        FOOTER_TEMPLATE,
+        protocol_version=PROTOCOL_VERSION,
+        app_version=APP_VERSION
     )
 
     return render_template_string(
         INDEX_TEMPLATE,
+        header_section=header_section,
+        footer_section=footer_section,
         user_feed=user_feed_for_panel,
-        subscriptions_panel=subscriptions_panel,
+        subscriptions_panel=subscriptions_panel(),
         logged_in=is_logged_in(),
         site_name=SITE_NAME,
         onion_address=onion_address,
-        protocol_version=PROTOCOL_VERSION,
-        app_version=APP_VERSION,
         profile=profile_data,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html
@@ -1344,7 +1456,7 @@ def remove_subscription(site_dir):
         print(f"Subscription directory not found: {target_path}", file=sys.stderr)
         return jsonify({"error": "Subscription not found."}), 404
 
-# New route to serve subscriptions panel content for AJAX refresh
+# Subscriptions panel content for AJAX refresh
 @app.route('/subscriptions_panel')
 def subscriptions_panel():
     user_feed_data = load_json(FEED_FILE) or []
@@ -1352,14 +1464,12 @@ def subscriptions_panel():
     if isinstance(user_feed_data, list):
          for msg_str in user_feed_data:
             parsed_msg = parse_message_string(msg_str)
-            if parsed_msg and parsed_msg['site'] == SITE_NAME:
-                 parsed_msg['is_own_post'] = True
-                 user_processed_feed.append(parsed_msg)
-            elif parsed_msg:
-                 print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
-            else:
-                 print(f"Warning: Skipping invalid message string from main feed '{FEED_FILE}': {msg_str[:100]}...", file=sys.stderr)
-    # Use the new utility function to load subscriptions.
+            if parsed_msg:
+                if parsed_msg['site'] == SITE_NAME:
+                    user_processed_feed.append(parsed_msg)
+                else:
+                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
+    # Load subscriptions
     subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
     combined_feed = user_processed_feed + subscription_raw_feed
     try:
@@ -1367,7 +1477,7 @@ def subscriptions_panel():
     except Exception as e:
         print(f"Error sorting combined feed: {e}", file=sys.stderr)
     for post in combined_feed:
-        if not post.get('is_own_post', False):
+        if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
     profile_data = load_json(PROFILE_FILE) or {}
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -1378,7 +1488,8 @@ def subscriptions_panel():
         subscriptions=subscriptions_with_nicknames,
         logged_in=is_logged_in(),
         profile=profile_data,
-        bmd2html=bmd2html
+        bmd2html=bmd2html,
+        site_name=SITE_NAME
     )
 
 def initialize_app():
