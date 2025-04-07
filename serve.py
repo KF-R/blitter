@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.1' 
+APP_VERSION = '0.2.2' 
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
@@ -755,6 +755,12 @@ SUBSCRIPTIONS_TEMPLATE = """
             | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
         {% endif %}
         | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
+        {% if post.reply_id != null_reply_address %}
+            <ul><li>
+                <em>In reply to:</em>
+                <a href="http://{{ post.reply_id.split(':')[0] }}.onion/thread/{{ post.reply_id }}">{{ post.reply_id }}</a>
+            </li></ul>
+        {% endif %}
     </div>
     <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
 </div>
@@ -871,12 +877,18 @@ VIEW_THREAD_TEMPLATE="""
                     {{ parent_post.display_timestamp }}
                     | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
                     | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}" target="_blank" title="View">Thread</a>
+                    {% if parent_post.reply_id != null_reply_address %}
+                        <ul><li>
+                            <em>In reply to:</em>
+                            <a href="http://{{ parent_post.reply_id.split(':')[0] }}.onion/thread/{{ parent_post.reply_id }}">{{ parent_post.reply_id }}</a>
+                        </li></ul>
+                    {% endif %}
                 </div>
                 <div class="post-content">{{ bmd2html(parent_post.display_content) | safe }}</div>
             </div>
         {% endif %}
         <hr/>
-        <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}">
+        <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}"{% if selected_post.reply_id != null_reply_address %} style="margin-left:50px;"{% endif %}>
             <div class="post-meta">
                 {% if selected_post.site == site_name %}
                     <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
@@ -1019,7 +1031,8 @@ def view_thread(message_id):
         site_name=SITE_NAME,
         profile=profile_data,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
-        bmd2html=bmd2html
+        bmd2html=bmd2html,
+        null_reply_address=NULL_REPLY_ADDRESS
     )         
 
     return(view_thread)
@@ -1578,6 +1591,7 @@ def subscriptions_panel():
         logged_in=is_logged_in(),
         profile=profile_data,
         bmd2html=bmd2html,
+        null_reply_address=NULL_REPLY_ADDRESS,
         site_name=SITE_NAME
     )
 
