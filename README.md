@@ -92,6 +92,13 @@ python keygen.py --prefix abcd --key-dir keys --workers 4
 - `--key-dir`: Parent directory to create the onion service directory (default: `keys`).
 - `--workers`: Number of worker processes to use (default: the number of CPU cores).
 
+
+Most new Blitter users may want to simply generate an address without a custom "vanity" prefix, which should be near-instantaneous:
+
+```bash
+python keygen.py
+```
+
 ---
 
 ## How the Keygen works
