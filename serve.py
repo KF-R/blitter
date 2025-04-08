@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.6'
+APP_VERSION = '0.2.7'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 
 import os
@@ -861,7 +861,7 @@ VIEW_THREAD_TEMPLATE = """
                     <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
                     {{ parent_post.display_timestamp }}
                     | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
-                    | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}" target="_blank" title="View">Thread</a>
+                    | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}"{% if parent_post.site != site_name %} target="_blank"{% endif %} title="View">Thread</a>
                     {% if parent_post.reply_id != null_reply_address %}
                         <ul><li>
                             <em>In reply to:</em>
@@ -1049,7 +1049,7 @@ def view_thread(message_id):
             html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
             html += f'{child["display_timestamp"]} '
             html += f'| <a href="{url_for("view_message", timestamp=child["timestamp"])}" title="View raw message format">Raw</a> '
-            html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}" target="_blank" title="View thread">Thread</a>'
+            html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}"{' target="_blank"' if (child["site"]!=SITE_NAME) else ''} title="View thread">Thread</a>'
             if child["reply_id"] != NULL_REPLY_ADDRESS:
                 html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
             html += '</div>'
