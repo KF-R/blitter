@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.4'
+APP_VERSION = '0.2.6'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 
 import os
@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# stem warnings are not to be included in the app log but errors should be
+# Suppress non-error stem warnings
 try:
     import stem.util.log
     stem.util.log.get_logger().setLevel(logging.ERROR)
@@ -46,7 +46,6 @@ except ImportError:
     logger.warning("Install it using: pip install stem")
 
 app = Flask(__name__)
-# Secret key for session management (replace with a real secret key in production)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
@@ -56,44 +55,34 @@ SUBSCRIPTIONS_DIR = 'subscriptions'
 KEYS_DIR = 'keys'
 LOG_DIR = 'log'
 SECRET_WORD_FILE = 'secret_word'
-ONION_PORT = 80  # Virtual port the onion service will listen on
-FLASK_HOST = "127.0.0.1"  # Host Flask should listen on for Tor
-FLASK_PORT = 5000  # Port Flask should listen on for Tor
+ONION_PORT = 80
+FLASK_HOST = "127.0.0.1"
+FLASK_PORT = 5000
 MAX_MSG_LENGTH = 512
-SOCKS_PROXY = "socks5h://127.0.0.1:9050"  # SOCKS proxy for Tor requests
-FETCH_TIMEOUT = 30  # Timeout in seconds for fetching subscription feeds
-FETCH_CYCLE = 300  # Automatic fetch interval in seconds
+SOCKS_PROXY = "socks5h://127.0.0.1:9050"
+FETCH_TIMEOUT = 30
+FETCH_CYCLE = 300
 NULL_REPLY_ADDRESS = '0'*56 + ':' + '0'*16
 
 # --- Global Variables ---
 SITE_NAME = "tor_setup_pending"  # Placeholder until Tor setup
-# --- Tor Globals ---
 tor_controller = None
 tor_service_id = None
 onion_address = None
-# --- Fetching Globals ---
-fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)  # Executor for background fetches
-active_fetches = {}  # Track active fetch tasks (optional for status, might be less useful with lock)
-fetch_lock = threading.Lock()  # Lock to prevent concurrent manual/auto fetch cycles
-fetch_timer = None  # Timer object for rescheduling background fetches
+fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+fetch_lock = threading.Lock()
+fetch_timer = None
 
-# --- Helper Functions ---
+# --- Helper Functions for Code Reduction ---
 
 def is_valid_onion_address(addr):
-    # Matches 56 characters from a-z and 2-7, optionally followed by ".onion"
     return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
 
 def load_bip39_wordlist(filename='bip39_english.txt'):
-    """
-    Load the BIP-0039 word list from a file.
-    The file should contain exactly 2048 words (one per line).
-    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     filepath = os.path.join(script_dir, filename)
     if not os.path.exists(filepath):
-        # Fallback to current working directory if not found next to script
         filepath = filename
-
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             words = [line.strip() for line in f if line.strip()]
@@ -108,7 +97,6 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
         sys.exit(1)
 
 def load_json(filename):
-    """Loads JSON data from a file."""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -120,11 +108,10 @@ def load_json(filename):
         logger.warning("Could not decode JSON from %s: %s", filename, e)
         return None
     except Exception as e:
-         logger.error("Error loading JSON from %s: %s", filename, e)
-         return None
+        logger.error("Error loading JSON from %s: %s", filename, e)
+        return None
 
 def save_json(filename, data):
-    """Saves JSON data to a file."""
     try:
         dir_name = os.path.dirname(filename)
         if dir_name:
@@ -137,16 +124,13 @@ def save_json(filename, data):
         logger.error("Unexpected error saving JSON to %s: %s", filename, e)
 
 def is_logged_in():
-    """Checks if the user is logged in via session."""
     return 'logged_in' in session and session['logged_in']
 
 def get_current_timestamp_hex():
-    """Gets the current time as a 16-byte hex timestamp using full nanosecond precision."""
     ns_timestamp = time.time_ns()
     return f'{ns_timestamp:016x}'
 
 def format_timestamp_for_display(hex_timestamp):
-    """Formats a hex timestamp (stored in nanoseconds) for display."""
     try:
         ns_timestamp = int(hex_timestamp, 16)
         if ns_timestamp > 4102444800000000000:
@@ -166,7 +150,6 @@ def format_timestamp_for_display(hex_timestamp):
         return "Invalid Timestamp"
 
 def parse_message_string(msg_str):
-    """Parses a message string into a dictionary, returns None if invalid."""
     if not isinstance(msg_str, str) or not msg_str.startswith('|') or not msg_str.endswith('|'):
         return None
     parts = msg_str.strip('|').split('|')
@@ -187,7 +170,6 @@ def parse_message_string(msg_str):
         actual_len = len(content.encode('utf-8', errors='ignore'))
         if actual_len != expected_len:
             logger.warning("Message length field %d does not match UTF-8 byte length %d. Content: '%s...'", expected_len, actual_len, content[:50])
-            pass
     except ValueError:
         return None
     return {
@@ -205,9 +187,6 @@ def parse_message_string(msg_str):
     }
 
 def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
-    """Creates a message string:
-    |<protocol_version>|<sitename>|<timestamp>|<reply-id>|<expiration>|<flag_int>|<len>|<content>|
-    """
     global SITE_NAME, PROTOCOL_VERSION
     if SITE_NAME.startswith("tor_"):
          logger.error("Cannot create message, Tor setup incomplete/failed.")
@@ -229,14 +208,55 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
 
     expiration = 'f'*16
     flag_int = '0'*16
-
     len_field = f"{content_length:03d}"
-
     if not reply_id:
         reply_id = NULL_REPLY_ADDRESS
 
     message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
     return message, timestamp
+
+def bmd2html(bmd_string):
+    if not isinstance(bmd_string, str):
+        return ""
+    html_string = escape(bmd_string)
+    def replace_link(match):
+        text = match.group(1)
+        url = match.group(2)
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+        safe_url = escape(url)
+        return f'<a href="{safe_url}" target="_blank">{escape(text)}</a>'
+    html_string = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, html_string)
+    html_string = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', html_string)
+    html_string = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', html_string)
+    html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
+    return html_string
+
+def get_passphrase(service_dir, secret_word) -> list:
+    bip39 = load_bip39_wordlist()
+    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+    try:
+        with open(key_file_path, "rb") as f:
+            f.seek(-64, os.SEEK_END)
+            payload = f.read(64)
+            if len(payload) != 64:
+                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
+    except FileNotFoundError:
+        logger.error("Key file not found at %s", key_file_path)
+        raise
+    except IOError as e:
+        logger.error("Error reading key file %s: %s", key_file_path, e)
+        raise
+
+    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
+    digest_int = int.from_bytes(digest, byteorder="big")
+    truncated = digest_int >> (256 - 66)
+    words = []
+    for i in range(6):
+        shift = (6 - i - 1) * 11
+        index = (truncated >> shift) & 0x7FF
+        words.append(bip39[index])
+    return words
 
 def load_subscriptions():
     """
@@ -277,56 +297,6 @@ def load_subscriptions():
          subscription_raw_feed = []
          nicknames_map = {}
     return subscriptions_with_nicknames, subscription_raw_feed, nicknames_map
-
-def bmd2html(bmd_string):
-    """Converts a Blitter Markdown string to valid html"""
-    if not isinstance(bmd_string, str):
-        return ""
-    html_string = escape(bmd_string)
-    def replace_link(match):
-        text = match.group(1)
-        url = match.group(2)
-        if not url.startswith(('http://', 'https://')):
-            url = 'http://' + url
-        safe_url = escape(url)
-        return f'<a href="{safe_url}" target="_blank">{escape(text)}</a>'
-    html_string = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, html_string)
-    html_string = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', html_string)
-    html_string = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', html_string)
-    html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
-    return html_string
-
-def get_passphrase(service_dir, secret_word) -> list:
-    """
-    Reads the last 64 bytes of the binary file,
-    combines it with the secret_word and computes the SHA-256 hash,
-    truncates it to 66 bits (6 x 11 bits), and maps each 11-bit segment
-    to a word in the BIP-0039 word list.
-    """
-    bip39 = load_bip39_wordlist()
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
-    try:
-        with open(key_file_path, "rb") as f:
-            f.seek(-64, os.SEEK_END)
-            payload = f.read(64)
-            if len(payload) != 64:
-                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
-    except FileNotFoundError:
-        logger.error("Key file not found at %s", key_file_path)
-        raise
-    except IOError as e:
-        logger.error("Error reading key file %s: %s", key_file_path, e)
-        raise
-
-    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
-    digest_int = int.from_bytes(digest, byteorder="big")
-    truncated = digest_int >> (256 - 66)
-    words = []
-    for i in range(6):
-        shift = (6 - i - 1) * 11
-        index = (truncated >> shift) & 0x7FF
-        words.append(bip39[index])
-    return words
 
 # --- Tor Integration Functions ---
 
@@ -483,7 +453,7 @@ def cleanup_tor_service():
     elif tor_service_id:
         logger.warning("Tor controller not available for cleanup of service %s. Service might persist if Tor continues running.", tor_service_id)
 
-# --- HTML Templates ---
+# --- Template Strings ---
 
 LOGIN_TEMPLATE = """
 <!doctype html>
@@ -589,7 +559,7 @@ INDEX_TEMPLATE = """
             <hr/>
             {% endif %}
             {% for post in user_feed %}
-            <div class="post-box">
+            <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
                 <div class="post-meta">
                     Posted: {{ post.display_timestamp }}
                      | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
@@ -713,9 +683,8 @@ INDEX_TEMPLATE = """
               });
       }
 
-      setInterval(refreshSubscriptionsPanel, 60000); // Refresh every 60 seconds
+      setInterval(refreshSubscriptionsPanel, 60000);
 
-      // Initial binding on page load
       document.addEventListener("DOMContentLoaded", function () {
           bindRemoveLinks();
       });
@@ -737,11 +706,7 @@ INDEX_TEMPLATE = """
                       const text = textarea.value;
                       const byteLength = new TextEncoder().encode(text).length;
                       counter.textContent = `${byteLength} / ${maxBytes} bytes`;
-                      if (byteLength > maxBytes) {
-                          counter.style.color = "red";
-                      } else {
-                           counter.style.color = "#aaa";
-                      }
+                      counter.style.color = (byteLength > maxBytes) ? "red" : "#aaa";
                   };
                   textarea.addEventListener("input", updateCounter);
                   updateCounter();
@@ -832,17 +797,16 @@ HEADER_TEMPLATE = """
             {% else %}
                 <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
             {% endif %}
-
             <span id="site-name">{{ onion_address or site_name }}</span>
             <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
         </div>
 """
 
-FOOTER_TEMPLATE="""
+FOOTER_TEMPLATE = """
        <p style="text-align: center; font-size: 0.8em;">Blitter Node v{{ app_version }} | Protocol v{{ protocol_version }}</p>
- """
+"""
 
-VIEW_THREAD_TEMPLATE="""
+VIEW_THREAD_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
@@ -945,7 +909,6 @@ VIEW_THREAD_TEMPLATE="""
     <div class="footer">
         {{ footer_section|safe }}
     </div>
-    <!-- JavaScript for toggling collapsible child threads -->
     <script>
     function toggleChildren(id) {
         var elem = document.getElementById(id);
@@ -963,11 +926,73 @@ VIEW_THREAD_TEMPLATE="""
 </html>
 """
 
+# --- Additional Helper Functions ---
+
+def get_local_feed():
+    feed_data = load_json(FEED_FILE) or []
+    local_feed = []
+    for msg_str in feed_data:
+        parsed = parse_message_string(msg_str)
+        if parsed and parsed['site'] == SITE_NAME:
+            local_feed.append(parsed)
+        elif parsed:
+            logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed['site'], SITE_NAME, FEED_FILE)
+    return local_feed
+
+def sort_feed(feed):
+    return sorted(feed, key=lambda x: x['timestamp'], reverse=True)
+
+def get_subscription_dirs():
+    if os.path.isdir(SUBSCRIPTIONS_DIR):
+         return [d for d in os.listdir(SUBSCRIPTIONS_DIR)
+                     if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
+                     and len(d) == 56
+                     and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
+    return []
+
+def normalize_onion_address(onion_input):
+    onion_input = onion_input.strip().lower().replace("http://", "").replace("https://", "")
+    if onion_input.endswith('/'):
+        onion_input = onion_input[:-1]
+    if onion_input.endswith('.onion'):
+        dir_name = onion_input[:-6]
+    else:
+        dir_name = onion_input
+        onion_input += '.onion'
+    return onion_input, dir_name
+
+def get_common_context():
+    profile_data = load_json(PROFILE_FILE) or {}
+    return {
+        'header_section': render_template_string(HEADER_TEMPLATE, logged_in=is_logged_in(), profile=profile_data, site_name=SITE_NAME, onion_address=onion_address),
+        'footer_section': render_template_string(FOOTER_TEMPLATE, protocol_version=PROTOCOL_VERSION, app_version=APP_VERSION),
+        'site_name': SITE_NAME,
+        'onion_address': onion_address,
+        'profile': profile_data,
+        'MAX_MSG_LENGTH': MAX_MSG_LENGTH,
+        'bmd2html': bmd2html,
+        'null_reply_address': NULL_REPLY_ADDRESS,
+        'logged_in': is_logged_in()
+    }
+
+def get_combined_feed():
+    local_feed = get_local_feed()
+    # Get subscription data from the restored load_subscriptions function.
+    _, subscription_feed, nicknames_map = load_subscriptions()
+    combined = local_feed + subscription_feed
+    combined = sort_feed(combined)
+    common = get_common_context()
+    for post in combined:
+        if post['site'] != SITE_NAME:
+            post['nickname'] = nicknames_map.get(post['site'])
+        else:
+            post['nickname'] = common['profile'].get('nickname', 'User')
+    return combined
+
 # --- Flask Routes ---
 
 @app.route('/thread/<string:message_id>')
 def view_thread(message_id):
-
     profile_data = load_json(PROFILE_FILE) or {}
 
     if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):
@@ -980,32 +1005,7 @@ def view_thread(message_id):
     if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
         abort(400, description="Invalid timestamp format.")
 
-    thread_section = ""
-
-    local_message = False  # Whether this selected post is in the local feed
-    user_feed_data = load_json(FEED_FILE) or []
-    user_processed_feed = []
-    if isinstance(user_feed_data, list):
-         for msg_str in user_feed_data:
-            parsed_msg = parse_message_string(msg_str)
-            if parsed_msg:
-                if parsed_msg['site'] == SITE_NAME:
-                    user_processed_feed.append(parsed_msg)
-                else:
-                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
-
-    _, subscription_raw_feed, nicknames_map = load_subscriptions()
-    combined_feed = user_processed_feed + subscription_raw_feed
-    try:
-        combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
-    except Exception as e:
-        logger.error("Error sorting combined feed: %s", e)
-    for post in combined_feed:
-        if post['site'] != SITE_NAME:
-            post['nickname'] = nicknames_map.get(post['site'])
-        else:
-            post['nickname'] = profile_data.get('nickname', 'User')
-
+    combined_feed = get_combined_feed()
     selected_post = None
     parent_post = None
     for post in combined_feed:
@@ -1035,7 +1035,11 @@ def view_thread(message_id):
         html += f'<div id="{parent_id}-children">'
         for child in children:
             child_id = f"{child['site']}_{child['timestamp']}"
-            html += '<div class="post-box" style="margin-top:10px;">'
+            # Add the own-post-highlight class if the child post is local
+            if child['site'] == SITE_NAME:
+                html += '<div class="post-box own-post-highlight" style="margin-top:10px;">'
+            else:
+                html += '<div class="post-box" style="margin-top:10px;">'
             html += '<div class="post-meta">'
             if child['site'] == SITE_NAME:
                 html += f'<span class="nickname">{profile_data.get("nickname", "Local user")}: </span>'
@@ -1056,78 +1060,39 @@ def view_thread(message_id):
         return html
 
     thread_section = generate_children_html(selected_post, combined_feed, 1)
-
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-
-    header_section = render_template_string(
-        HEADER_TEMPLATE,
-        logged_in=is_logged_in(),
-        profile=profile_data,
-        site_name=SITE_NAME,
-        onion_address=onion_address,
-    )
-
-    footer_section = render_template_string(
-        FOOTER_TEMPLATE,
-        protocol_version=PROTOCOL_VERSION,
-        app_version=APP_VERSION
-    )
-
+    common = get_common_context()
     view_thread_html = render_template_string(
         VIEW_THREAD_TEMPLATE,
-        header_section=header_section,
+        header_section=common['header_section'],
         utc_now=utc_now,
-        logged_in=is_logged_in(),
+        logged_in=common['logged_in'],
         parent_post=parent_post,
         selected_post=selected_post,
         thread_section=thread_section,
-        footer_section=footer_section,
+        footer_section=common['footer_section'],
         site_name=SITE_NAME,
-        profile=profile_data,
+        profile=common['profile'],
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html,
         null_reply_address=NULL_REPLY_ADDRESS
     )         
-
     return view_thread_html
 
 @app.route('/')
 def index():
-    user_feed_data = load_json(FEED_FILE) or []
-    user_processed_feed = []
-    if isinstance(user_feed_data, list):
-        for msg_str in user_feed_data:
-            parsed_msg = parse_message_string(msg_str)
-            if parsed_msg:
-                if parsed_msg['site'] == SITE_NAME:
-                    user_processed_feed.append(parsed_msg)
-                else:
-                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
-    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    profile_data = load_json(PROFILE_FILE) or {}
-    user_feed_for_panel = sorted(user_processed_feed, key=lambda x: x['timestamp'], reverse=True)
-    header_section = render_template_string(
-        HEADER_TEMPLATE,
-        logged_in=is_logged_in(),
-        profile=profile_data,
-        site_name=SITE_NAME,
-        onion_address=onion_address,
-    )
-    footer_section = render_template_string(
-        FOOTER_TEMPLATE,
-        protocol_version=PROTOCOL_VERSION,
-        app_version=APP_VERSION
-    )
+    common = get_common_context()
+    local_feed = sort_feed(get_local_feed())
     return render_template_string(
         INDEX_TEMPLATE,
-        header_section=header_section,
-        footer_section=footer_section,
-        user_feed=user_feed_for_panel,
+        header_section=common['header_section'],
+        footer_section=common['footer_section'],
+        user_feed=local_feed,
         subscriptions_panel=subscriptions_panel(),
-        logged_in=is_logged_in(),
+        logged_in=common['logged_in'],
         site_name=SITE_NAME,
         onion_address=onion_address,
-        profile=profile_data,
+        profile=common['profile'],
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html
     )
@@ -1295,17 +1260,10 @@ def view_message(timestamp):
 def add_subscription():
     if not is_logged_in():
         abort(403)
-    onion_input = request.form.get('onion_address', '').strip().lower()
-    onion_input = onion_input.replace("http://","").replace("https://","")
-    if onion_input.endswith('/'):
-         onion_input = onion_input[:-1]
+    onion_input_raw = request.form.get('onion_address', '')
+    onion_input, dir_name = normalize_onion_address(onion_input_raw)
     if not onion_input:
         return redirect(url_for('index'))
-    if onion_input.endswith('.onion'):
-         dir_name = onion_input[:-6]
-    else:
-         dir_name = onion_input
-         onion_input += '.onion'
     if not (len(dir_name) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in dir_name)):
          logger.error("Add subscription failed: Invalid address format for %s", onion_input)
          return redirect(url_for('index'))
@@ -1324,9 +1282,7 @@ def add_subscription():
         r = requests.get(about_url, proxies=proxies, timeout=FETCH_TIMEOUT)
         r.raise_for_status()
         about_text = r.text.strip()
-        if not about_text:
-            logger.warning("/about for %s returned empty response.", onion_input)
-        else:
+        if about_text:
             lines = about_text.splitlines()
             temp_info = {}
             if lines and lines[0].strip().lower() != onion_input:
@@ -1345,6 +1301,8 @@ def add_subscription():
                           logger.warning("Malformed line in /about from %s: %s", onion_input, line)
             about_info = temp_info
             logger.info("Successfully fetched /about info for %s: %s", onion_input, about_info)
+        else:
+            logger.warning("/about for %s returned empty response.", onion_input)
     except requests.exceptions.Timeout:
         logger.error("Error fetching /about from %s: Timeout after %s seconds", onion_input, FETCH_TIMEOUT)
     except requests.exceptions.RequestException as e:
@@ -1486,12 +1444,7 @@ def run_fetch_cycle():
         sites_fetched_count = 0
         try:
             start_time = time.time()
-            subscription_dirs = []
-            if os.path.isdir(SUBSCRIPTIONS_DIR):
-                subscription_dirs = [d for d in os.listdir(SUBSCRIPTIONS_DIR)
-                                     if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
-                                     and len(d) == 56
-                                     and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
+            subscription_dirs = get_subscription_dirs()
             if not subscription_dirs:
                 logger.info("[Fetcher] No valid subscription directories found.")
             else:
@@ -1544,12 +1497,7 @@ def fetch_subscriptions():
         logger.info("[Fetcher] Acquired lock for manual run.")
         submitted_tasks = 0
         try:
-            subscription_dirs = []
-            if os.path.isdir(SUBSCRIPTIONS_DIR):
-                subscription_dirs = [d for d in os.listdir(SUBSCRIPTIONS_DIR)
-                                     if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
-                                     and len(d) == 56
-                                     and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
+            subscription_dirs = get_subscription_dirs()
             if not subscription_dirs:
                 logger.info("[Fetcher] No subscriptions found to fetch.")
                 fetch_lock.release()
@@ -1604,35 +1552,22 @@ def remove_subscription(site_dir):
 
 @app.route('/subscriptions_panel')
 def subscriptions_panel():
-    user_feed_data = load_json(FEED_FILE) or []
-    user_processed_feed = []
-    if isinstance(user_feed_data, list):
-         for msg_str in user_feed_data:
-            parsed_msg = parse_message_string(msg_str)
-            if parsed_msg:
-                if parsed_msg['site'] == SITE_NAME:
-                    user_processed_feed.append(parsed_msg)
-                else:
-                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
+    local_feed = get_local_feed()
     subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
-    combined_feed = user_processed_feed + subscription_raw_feed
-    try:
-        combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
-    except Exception as e:
-        logger.error("Error sorting combined feed: %s", e)
+    combined_feed = local_feed + subscription_raw_feed
+    combined_feed = sort_feed(combined_feed)
     for post in combined_feed:
         if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
- 
-    profile_data = load_json(PROFILE_FILE) or {}
+    common = get_common_context()
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     return render_template_string(
         SUBSCRIPTIONS_TEMPLATE,
         utc_time=utc_now,
         combined_feed=combined_feed,
         subscriptions=subscriptions_with_nicknames,
-        logged_in=is_logged_in(),
-        profile=profile_data,
+        logged_in=common['logged_in'],
+        profile=common['profile'],
         bmd2html=bmd2html,
         null_reply_address=NULL_REPLY_ADDRESS,
         site_name=SITE_NAME
