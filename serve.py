@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.2' 
+APP_VERSION = '0.2.3' 
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 import os
 import json
@@ -854,6 +854,7 @@ VIEW_THREAD_TEMPLATE="""
          .subscription-site-name { font-weight: bold; color: #aaa; }
          .remove-link { margin-left: 5px; color: #f88; font-size: 0.9em; cursor: pointer; }
          #status-message { margin-top: 10px; padding: 5px; background-color: #444; border-radius: 3px; display: none; font-size: 0.9em; }
+         .children { margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -924,7 +925,21 @@ VIEW_THREAD_TEMPLATE="""
     <div class="footer">
         {{ footer_section|safe }}
     </div>
-    </body>
+    <!-- JavaScript for toggling collapsible child threads -->
+    <script>
+    function toggleChildren(id) {
+        var elem = document.getElementById(id);
+        var toggleLink = document.getElementById(id.replace('-children','-toggle'));
+        if (elem.style.display === 'none') {
+             elem.style.display = 'block';
+             if (toggleLink) toggleLink.textContent = '[-] Collapse replies';
+        } else {
+             elem.style.display = 'none';
+             if (toggleLink) toggleLink.textContent = '[+] Expand replies';
+        }
+    }
+    </script>
+</body>
 </html>
 """
 
@@ -935,7 +950,8 @@ def view_thread(message_id):
 
     profile_data = load_json(PROFILE_FILE) or {}
 
-    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):   abort(400, description="Invalid message id format.")
+    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):
+        abort(400, description="Invalid message id format.")
     message_site, message_timestamp = message_id.split(':')
 
     if not is_valid_onion_address(message_site):
@@ -944,9 +960,9 @@ def view_thread(message_id):
     if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
         abort(400, description="Invalid timestamp format.")
 
-    thread_section = "THREAD:"
+    thread_section = ""
 
-    local_message = False # Whether this selected post is in the local feed
+    local_message = False  # Whether this selected post is in the local feed
     # Assemble combined feed
     user_feed_data = load_json(FEED_FILE) or []
     user_processed_feed = []
@@ -969,39 +985,63 @@ def view_thread(message_id):
         if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
         else:
-            post['nickname'] = profile_data['nickname']
+            post['nickname'] = profile_data.get('nickname', 'User')
 
+    selected_post = None
+    parent_post = None
     for post in combined_feed:
         if post['site'] == message_site and post['timestamp'] == message_timestamp:
-            # Message is stored locally
-
+            selected_post = post
             # Display parent if exists
             if post['reply_id'] != NULL_REPLY_ADDRESS:
-                # Display parent
-                parent_post = ""
-
                 for parent in combined_feed:
                     if parent['site'] + ':' + parent['timestamp'] == post['reply_id']:
-                        # parent_post = f"{parent['site']} ({parent['nickname']}) said: {parent['content']}"
                         parent_post = parent
                         break
-                        
-                if parent_post == "":
-                    # Parent post is not local
-                    parent_post = f"Parent post is not cached locally: http://{parent['site']}.onion/thread/{parent['timestamp']}"
-                
+                if not parent_post:
+                    parent_post = f"Parent post is not cached locally: http://{message_site}.onion/thread/{post['reply_id']}"
             else:
-                parent_post = "This post is not a reply. It is an original bleet."    
-
-            # Display message
-            selected_post = post
-
-            # Display children if exist
-            thread_section += 'children (replies) here'
-            # TODO: Recursively find children, grandchildren (deeper replies) building a tree of posts to display
+                parent_post = "This post is not a reply. It is an original bleet."
+            break
 
     if not selected_post:
         abort(404, description="Message not stored or cached on this Blitter site.")
+
+    # Define a recursive function to build a collapsible thread tree.
+    def generate_children_html(parent, feed, level=1):
+        parent_id = f"{parent['site']}_{parent['timestamp']}"
+        # Find all posts that are direct replies to the parent
+        children = [child for child in feed if child['reply_id'] == f"{parent['site']}:{parent['timestamp']}"]
+        if not children:
+            return ""
+        html = f'<div class="children" style="margin-left:{level * 20}px; border-left:1px dashed #555; padding-left:10px;">'
+        html += f'<a href="javascript:void(0);" onclick="toggleChildren(\'{parent_id}-children\');" id="{parent_id}-toggle">[-] Collapse replies</a>'
+        html += f'<div id="{parent_id}-children">'
+        for child in children:
+            child_id = f"{child['site']}_{child['timestamp']}"
+            html += '<div class="post-box" style="margin-top:10px;">'
+            html += '<div class="post-meta">'
+            if child['site'] == SITE_NAME:
+                html += f'<span class="nickname">{profile_data.get("nickname", "Local user")}: </span>'
+            else:
+                if child.get("nickname"):
+                    html += f'<span class="nickname">{child["nickname"]}: </span>'
+            html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
+            html += f'{child["display_timestamp"]} '
+            html += f'| <a href="{url_for("view_message", timestamp=child["timestamp"])}" title="View raw message format">Raw</a> '
+            html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}" target="_blank" title="View thread">Thread</a>'
+            if child["reply_id"] != NULL_REPLY_ADDRESS:
+                html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
+            html += '</div>'  # end post-meta
+            html += f'<div class="post-content">{bmd2html(child["display_content"])}</div>'
+            # Recursively add any replies to this child
+            html += generate_children_html(child, feed, level+1)
+            html += '</div>'  # end child post-box
+        html += '</div></div>'
+        return html
+
+    # Build the tree of replies for the selected message.
+    thread_section = generate_children_html(selected_post, combined_feed, 1)
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
@@ -1019,7 +1059,7 @@ def view_thread(message_id):
         app_version=APP_VERSION
     )
 
-    view_thread = render_template_string(
+    view_thread_html = render_template_string(
         VIEW_THREAD_TEMPLATE,
         header_section=header_section,
         utc_now=utc_now,
@@ -1035,7 +1075,7 @@ def view_thread(message_id):
         null_reply_address=NULL_REPLY_ADDRESS
     )         
 
-    return(view_thread)
+    return view_thread_html
 
 @app.route('/')
 def index():
@@ -1746,4 +1786,3 @@ if __name__ == '__main__':
          sys.is_exiting = True
          cleanup_tor_service()
          print("\nExiting Blitter Node.")
-
