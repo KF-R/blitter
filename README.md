@@ -5,7 +5,7 @@
 **Blitter** is a self-hosted, decentralised Tor-based microblogging platform where every user is their own server.
 <hr/>
 <p>
-Think of it as a federated Twitter in the dark—only you control your identity, your content, and who you follow. No centralised servers. No ads. No cancellation. No manipulation. 
+Think of it as a federated Twitter in the dark—only you control your identity, your content, and who you follow. No account. No centralised servers. No ads. No cancellation. No manipulation. 
 </p>
 
 ## 🔍 What Is Blitter?
