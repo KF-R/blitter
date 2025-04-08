@@ -15,7 +15,7 @@ Blitter is:
 - 🧱 A **minimalist microblog** engine.
 - 🧅 **Tor-native**, hosting each user's feed as a v3 onion service.
 - 📡 **Federated**, with each instance pulling updates from subscribed peers.
-- 🔒 **Private** and **censorship-resistant** by design.
+- 🔒 **Anti-fragile** and **censorship-resistant** by design.
 - 🧬 Fully contained in a **single Python file** for simplicity and deployability.
 
 ---
