@@ -1,22 +1,39 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.3' 
+APP_VERSION = '0.2.4'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
+
 import os
 import json
 import time
 import datetime
-import sys  # Added for stderr
-import base64  # Added for key encoding
-import atexit  # Added for cleanup
+import sys
+import base64
+import atexit
 import string
-import requests  # Added for fetching subscriptions
-import concurrent.futures  # Added for async fetching
-import threading  # Added for background task feedback and timer
-import shutil  # Added for directory removal
+import requests
+import concurrent.futures
+import threading
+import shutil
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
-import re  # Added for parsing markdown
-import hashlib  # For authentication
+import re
+import hashlib
+import logging
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# stem warnings are not to be included in the app log but errors should be
+try:
+    import stem.util.log
+    stem.util.log.get_logger().setLevel(logging.ERROR)
+except ImportError:
+    pass
 
 # --- Tor Integration Imports ---
 try:
@@ -25,8 +42,8 @@ try:
     STEM_AVAILABLE = True
 except ImportError:
     STEM_AVAILABLE = False
-    print("Warning: 'stem' library not found. Tor integration will be disabled.", file=sys.stderr)
-    print("Install it using: pip install stem", file=sys.stderr)
+    logger.warning("'stem' library not found. Tor integration will be disabled.")
+    logger.warning("Install it using: pip install stem")
 
 app = Flask(__name__)
 # Secret key for session management (replace with a real secret key in production)
@@ -71,7 +88,6 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
     Load the BIP-0039 word list from a file.
     The file should contain exactly 2048 words (one per line).
     """
-    # Try finding the file relative to the script first
     script_dir = os.path.dirname(os.path.abspath(__file__))
     filepath = os.path.join(script_dir, filename)
     if not os.path.exists(filepath):
@@ -85,10 +101,10 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
             raise ValueError(f"BIP-0039 word list must contain exactly 2048 words (found {len(words)} in {filepath})")
         return words
     except FileNotFoundError:
-        print(f"FATAL ERROR: BIP-0039 wordlist '{filename}' not found in {script_dir} or current directory.", file=sys.stderr)
+        logger.critical("FATAL ERROR: BIP-0039 wordlist '%s' not found in %s or current directory.", filename, script_dir)
         sys.exit(1)
     except Exception as e:
-        print(f"FATAL ERROR: Failed to load BIP-0039 wordlist '{filepath}': {e}", file=sys.stderr)
+        logger.critical("FATAL ERROR: Failed to load BIP-0039 wordlist '%s': %s", filepath, e)
         sys.exit(1)
 
 def load_json(filename):
@@ -98,13 +114,13 @@ def load_json(filename):
             return json.load(f)
     except FileNotFoundError:
         if 'feedcache.json' not in filename and 'notes.json' not in filename:
-             print(f"Info: File not found {filename}, returning None.", file=sys.stderr)
+            logger.info("File not found %s, returning None.", filename)
         return None
     except json.JSONDecodeError as e:
-        print(f"Warning: Could not decode JSON from {filename}: {e}", file=sys.stderr)
+        logger.warning("Could not decode JSON from %s: %s", filename, e)
         return None
     except Exception as e:
-         print(f"Error loading JSON from {filename}: {e}", file=sys.stderr)
+         logger.error("Error loading JSON from %s: %s", filename, e)
          return None
 
 def save_json(filename, data):
@@ -116,9 +132,9 @@ def save_json(filename, data):
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except IOError as e:
-        print(f"Error: Could not write JSON to {filename}: {e}", file=sys.stderr)
+        logger.error("Could not write JSON to %s: %s", filename, e)
     except Exception as e:
-        print(f"Unexpected error saving JSON to {filename}: {e}", file=sys.stderr)
+        logger.error("Unexpected error saving JSON to %s: %s", filename, e)
 
 def is_logged_in():
     """Checks if the user is logged in via session."""
@@ -170,7 +186,7 @@ def parse_message_string(msg_str):
         expected_len = int(length_field)
         actual_len = len(content.encode('utf-8', errors='ignore'))
         if actual_len != expected_len:
-            print(f"Warning: Message length field {expected_len} does not match UTF-8 byte length {actual_len}. Content: '{content[:50]}...'", file=sys.stderr)
+            logger.warning("Message length field %d does not match UTF-8 byte length %d. Content: '%s...'", expected_len, actual_len, content[:50])
             pass
     except ValueError:
         return None
@@ -194,12 +210,12 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
     """
     global SITE_NAME, PROTOCOL_VERSION
     if SITE_NAME.startswith("tor_"):
-         print("Error: Cannot create message, Tor setup incomplete/failed.", file=sys.stderr)
+         logger.error("Cannot create message, Tor setup incomplete/failed.")
          return None, None
 
     timestamp = get_current_timestamp_hex()
     if not isinstance(content, str):
-         print("Error: Message content must be a string.", file=sys.stderr)
+         logger.error("Message content must be a string.")
          return None, None
 
     content_bytes = content.encode('utf-8', errors='ignore')
@@ -209,7 +225,7 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
         truncated_bytes = content_bytes[:MAX_MSG_LENGTH]
         content = truncated_bytes.decode('utf-8', errors='ignore')
         content_length = len(content.encode('utf-8', errors='ignore'))
-        print(f"Warning: Message content truncated to {content_length} bytes (max {MAX_MSG_LENGTH}).", file=sys.stderr)
+        logger.warning("Message content truncated to %d bytes (max %d).", content_length, MAX_MSG_LENGTH)
 
     expiration = 'f'*16
     flag_int = '0'*16
@@ -217,7 +233,7 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
     len_field = f"{content_length:03d}"
 
     if not reply_id:
-        reply_id=NULL_REPLY_ADDRESS
+        reply_id = NULL_REPLY_ADDRESS
 
     message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
     return message, timestamp
@@ -250,13 +266,13 @@ def load_subscriptions():
                             if parsed_msg['site'] == site_dir:
                                 subscription_raw_feed.append(parsed_msg)
                             else:
-                                print(f"Warning: Message site '{parsed_msg['site']}' in cache file '{cache_file}' does not match directory '{site_dir}'. Skipping display.", file=sys.stderr)
+                                logger.warning("Message site '%s' in cache file '%s' does not match directory '%s'. Skipping display.", parsed_msg['site'], cache_file, site_dir)
                         else:
-                            print(f"Noped: {msg_str}")
+                            logger.info("Noped: %s", msg_str)
                 elif cached_data is not None:
-                    print(f"Warning: Cache file '{cache_file}' is not a valid JSON list. Skipping.", file=sys.stderr)
+                    logger.warning("Cache file '%s' is not a valid JSON list. Skipping.", cache_file)
     except Exception as e:
-         print(f"Error loading subscription data or notes: {e}", file=sys.stderr)
+         logger.error("Error loading subscription data or notes: %s", e)
          subscriptions_with_nicknames = []
          subscription_raw_feed = []
          nicknames_map = {}
@@ -296,10 +312,10 @@ def get_passphrase(service_dir, secret_word) -> list:
             if len(payload) != 64:
                 raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
     except FileNotFoundError:
-        print(f"Error: Key file not found at {key_file_path}", file=sys.stderr)
+        logger.error("Key file not found at %s", key_file_path)
         raise
     except IOError as e:
-        print(f"Error reading key file {key_file_path}: {e}", file=sys.stderr)
+        logger.error("Error reading key file %s: %s", key_file_path, e)
         raise
 
     digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
@@ -316,20 +332,20 @@ def get_passphrase(service_dir, secret_word) -> list:
 
 def find_first_onion_service_dir(keys_dir):
     if not os.path.isdir(keys_dir):
-        print(f"Error: Keys directory '{keys_dir}' not found.", file=sys.stderr)
+        logger.error("Keys directory '%s' not found.", keys_dir)
         return None
     try:
         items = sorted(os.listdir(keys_dir))
     except OSError as e:
-        print(f"Error listing keys directory '{keys_dir}': {e}", file=sys.stderr)
+        logger.error("Error listing keys directory '%s': %s", keys_dir, e)
         return None
     for item in items:
         service_dir = os.path.join(keys_dir, item)
         key_file = os.path.join(service_dir, "hs_ed25519_secret_key")
         if os.path.isdir(service_dir) and os.path.isfile(key_file):
-            print(f"Found key directory: {service_dir}")
+            logger.info("Found key directory: %s", service_dir)
             return service_dir
-    print(f"Info: No suitable key directories found in '{keys_dir}'.", file=sys.stderr)
+    logger.info("No suitable key directories found in '%s'.", keys_dir)
     return None
 
 def get_key_blob(service_dir):
@@ -340,7 +356,7 @@ def get_key_blob(service_dir):
         is_new_format = key_data.startswith(b'== ed25519v1-secret: type0 ==\x00\x00\x00')
         is_old_format = key_data.startswith(b'== ed25519v1-secret: type0 ==') and len(key_data) == 96
         if not (is_new_format or is_old_format):
-             raise ValueError(f"Key file format is incorrect. Header mismatch.")
+             raise ValueError("Key file format is incorrect. Header mismatch.")
         if is_new_format and len(key_data) < 64+32:
              raise ValueError(f"Key file size is incorrect for new format ({len(key_data)} bytes found)")
         elif is_old_format and len(key_data) != 96:
@@ -349,31 +365,31 @@ def get_key_blob(service_dir):
         key_blob = base64.b64encode(key_material_64).decode('ascii')
         return f"ED25519-V3:{key_blob}"
     except FileNotFoundError:
-        print(f"Error: Secret key file not found: {key_file_path}", file=sys.stderr)
+        logger.error("Secret key file not found: %s", key_file_path)
         return None
     except ValueError as ve:
-        print(f"Error reading key file {key_file_path}: {ve}", file=sys.stderr)
+        logger.error("Error reading key file %s: %s", key_file_path, ve)
         return None
     except Exception as e:
-        print(f"Error processing key file {key_file_path}: {e}", file=sys.stderr)
+        logger.error("Error processing key file %s: %s", key_file_path, e)
         return None
 
 def start_tor_hidden_service(key_blob_with_type):
     if not STEM_AVAILABLE:
-        print("Error: Cannot start Tor service, 'stem' library is missing.", file=sys.stderr)
+        logger.error("Cannot start Tor service, 'stem' library is missing.")
         return False
     global tor_controller, tor_service_id, onion_address, SITE_NAME
     try:
-        print("Connecting to Tor controller...")
+        logger.info("Connecting to Tor controller...")
         controller = Controller.from_port()
         controller.authenticate()
-        print("Authenticated with Tor controller.")
+        logger.info("Authenticated with Tor controller.")
         command = (
             f"ADD_ONION {key_blob_with_type} "
             f"Flags=Detach "
             f"Port={ONION_PORT},{FLASK_HOST}:{FLASK_PORT}"
         )
-        print("Sending ADD_ONION command to Tor...")
+        logger.info("Sending ADD_ONION command to Tor...")
         response = controller.msg(command)
         if not response.is_ok():
             raise ProtocolError(f"ADD_ONION command failed:\n{response}")
@@ -391,13 +407,13 @@ def start_tor_hidden_service(key_blob_with_type):
                      parsed_onion_address = f"{parsed_service_id}.onion"
                      break
                 else:
-                     print(f"Warning: Received unexpected ServiceID format: {parsed_service_id}", file=sys.stderr)
+                     logger.warning("Received unexpected ServiceID format: %s", parsed_service_id)
                      parsed_service_id = None
         if not parsed_service_id or not parsed_onion_address:
             raw_response_content = response.content(decode=False)
             raise ValueError(f"ADD_ONION command seemed to succeed, but failed to parse valid ServiceID/OnionAddress from response. Raw content: {raw_response_content}")
-        print(f"Successfully created/attached service: {parsed_onion_address}")
-        print(f"Service points to http://{FLASK_HOST}:{FLASK_PORT}")
+        logger.info("Successfully created/attached service: %s", parsed_onion_address)
+        logger.info("Service points to http://%s:%s", FLASK_HOST, FLASK_PORT)
         tor_controller = controller
         tor_service_id = parsed_service_id
         onion_address = parsed_onion_address
@@ -405,63 +421,67 @@ def start_tor_hidden_service(key_blob_with_type):
         atexit.register(cleanup_tor_service)
         return True
     except ProtocolError as pe:
-         print(f"Tor Protocol Error: {pe}", file=sys.stderr)
-         print("Ensure Tor is running with ControlPort 9051 enabled and accessible.", file=sys.stderr)
-         print("Check Tor logs for more details.", file=sys.stderr)
+         logger.error("Tor Protocol Error: %s", pe)
+         logger.error("Ensure Tor is running with ControlPort 9051 enabled and accessible.")
+         logger.error("Check Tor logs for more details.")
          if tor_controller:
-             try: tor_controller.close()
-             except: pass
+             try: 
+                 tor_controller.close()
+             except Exception:
+                 pass
          tor_controller = None
          return False
     except Exception as e:
-        print(f"Error communicating with Tor controller: {e}", file=sys.stderr)
-        print("Ensure Tor is running with ControlPort enabled (e.g., ControlPort 9051) and", file=sys.stderr)
-        print("CookieAuthentication is enabled (CookieAuthentication 1).", file=sys.stderr)
+        logger.error("Error communicating with Tor controller: %s", e)
+        logger.error("Ensure Tor is running with ControlPort enabled (e.g., ControlPort 9051) and")
+        logger.error("CookieAuthentication is enabled (CookieAuthentication 1).")
         if tor_controller:
-            try: tor_controller.close()
-            except: pass
+            try: 
+                tor_controller.close()
+            except Exception:
+                pass
         tor_controller = None
         return False
 
 def cleanup_tor_service():
     global tor_controller, tor_service_id, fetch_timer, fetch_executor
     if fetch_timer:
-        print("Cancelling background fetch timer...")
+        logger.info("Cancelling background fetch timer...")
         fetch_timer.cancel()
         fetch_timer = None
-    print("Shutting down background fetch executor...")
+    logger.info("Shutting down background fetch executor...")
     fetch_executor.shutdown(wait=True, cancel_futures=True)
-    print("Fetch executor shut down.")
+    logger.info("Fetch executor shut down.")
     if tor_controller and tor_service_id:
-        print(f"\nCleaning up Tor service: {tor_service_id}")
+        logger.info("Cleaning up Tor service: %s", tor_service_id)
         try:
             if tor_controller.is_authenticated() and tor_controller.is_alive():
-                 print(f"Attempting DEL_ONION for {tor_service_id} (may fail if service is detached)...")
+                 logger.info("Attempting DEL_ONION for %s (may fail if service is detached)...", tor_service_id)
                  response = tor_controller.msg(f"DEL_ONION {tor_service_id}")
                  if response.is_ok():
-                     print(f"Successfully removed service {tor_service_id}")
+                     logger.info("Successfully removed service %s", tor_service_id)
                  else:
-                     print(f"Info: DEL_ONION command response for {tor_service_id}: {response.status_type} {response.status_severity} - {response.content(decode=False)}", file=sys.stderr)
+                     logger.info("DEL_ONION command response for %s: %s %s - %s", tor_service_id, response.status_type, response.status_severity, response.content(decode=False))
                      is_gone_error = any("HiddenServiceNonExistent" in str(line) for line in response.content())
                      if not is_gone_error:
-                          print(f"Warning: Failed to explicitly remove service {tor_service_id}. It might persist if Tor continues running.", file=sys.stderr)
+                          logger.warning("Failed to explicitly remove service %s. It might persist if Tor continues running.", tor_service_id)
             else:
-                 print(f"Warning: Tor controller connection lost or unauthenticated before cleanup of {tor_service_id}.", file=sys.stderr)
+                 logger.warning("Tor controller connection lost or unauthenticated before cleanup of %s.", tor_service_id)
         except ProtocolError as pe:
-             print(f"Warning: Tor Protocol Error during cleanup: {pe}", file=sys.stderr)
+             logger.warning("Tor Protocol Error during cleanup: %s", pe)
         except Exception as e:
-            print(f"Warning: Error during Tor service cleanup: {e}", file=sys.stderr)
+            logger.warning("Error during Tor service cleanup: %s", e)
         finally:
             if tor_controller:
                 try:
                     tor_controller.close()
-                    print("Tor controller connection closed.")
+                    logger.info("Tor controller connection closed.")
                 except Exception as close_e:
-                    print(f"Warning: Error closing Tor controller during cleanup: {close_e}", file=sys.stderr)
+                    logger.warning("Error closing Tor controller during cleanup: %s", close_e)
             tor_controller = None
             tor_service_id = None
     elif tor_service_id:
-        print(f"\nWarning: Tor controller not available for cleanup of service {tor_service_id}. Service might persist if Tor continues running.", file=sys.stderr)
+        logger.warning("Tor controller not available for cleanup of service %s. Service might persist if Tor continues running.", tor_service_id)
 
 # --- HTML Templates ---
 
@@ -963,7 +983,6 @@ def view_thread(message_id):
     thread_section = ""
 
     local_message = False  # Whether this selected post is in the local feed
-    # Assemble combined feed
     user_feed_data = load_json(FEED_FILE) or []
     user_processed_feed = []
     if isinstance(user_feed_data, list):
@@ -973,14 +992,14 @@ def view_thread(message_id):
                 if parsed_msg['site'] == SITE_NAME:
                     user_processed_feed.append(parsed_msg)
                 else:
-                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
+                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
 
     _, subscription_raw_feed, nicknames_map = load_subscriptions()
     combined_feed = user_processed_feed + subscription_raw_feed
     try:
         combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
     except Exception as e:
-        print(f"Error sorting combined feed: {e}", file=sys.stderr)
+        logger.error("Error sorting combined feed: %s", e)
     for post in combined_feed:
         if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
@@ -992,7 +1011,6 @@ def view_thread(message_id):
     for post in combined_feed:
         if post['site'] == message_site and post['timestamp'] == message_timestamp:
             selected_post = post
-            # Display parent if exists
             if post['reply_id'] != NULL_REPLY_ADDRESS:
                 for parent in combined_feed:
                     if parent['site'] + ':' + parent['timestamp'] == post['reply_id']:
@@ -1007,10 +1025,8 @@ def view_thread(message_id):
     if not selected_post:
         abort(404, description="Message not stored or cached on this Blitter site.")
 
-    # Define a recursive function to build a collapsible thread tree.
     def generate_children_html(parent, feed, level=1):
         parent_id = f"{parent['site']}_{parent['timestamp']}"
-        # Find all posts that are direct replies to the parent
         children = [child for child in feed if child['reply_id'] == f"{parent['site']}:{parent['timestamp']}"]
         if not children:
             return ""
@@ -1032,15 +1048,13 @@ def view_thread(message_id):
             html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}" target="_blank" title="View thread">Thread</a>'
             if child["reply_id"] != NULL_REPLY_ADDRESS:
                 html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
-            html += '</div>'  # end post-meta
+            html += '</div>'
             html += f'<div class="post-content">{bmd2html(child["display_content"])}</div>'
-            # Recursively add any replies to this child
             html += generate_children_html(child, feed, level+1)
-            html += '</div>'  # end child post-box
+            html += '</div>'
         html += '</div></div>'
         return html
 
-    # Build the tree of replies for the selected message.
     thread_section = generate_children_html(selected_post, combined_feed, 1)
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -1088,13 +1102,10 @@ def index():
                 if parsed_msg['site'] == SITE_NAME:
                     user_processed_feed.append(parsed_msg)
                 else:
-                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
-
+                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-
     profile_data = load_json(PROFILE_FILE) or {}
     user_feed_for_panel = sorted(user_processed_feed, key=lambda x: x['timestamp'], reverse=True)
-
     header_section = render_template_string(
         HEADER_TEMPLATE,
         logged_in=is_logged_in(),
@@ -1102,13 +1113,11 @@ def index():
         site_name=SITE_NAME,
         onion_address=onion_address,
     )
-
     footer_section = render_template_string(
         FOOTER_TEMPLATE,
         protocol_version=PROTOCOL_VERSION,
         app_version=APP_VERSION
     )
-
     return render_template_string(
         INDEX_TEMPLATE,
         header_section=header_section,
@@ -1132,32 +1141,32 @@ def login():
         secret_word_data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
         if not secret_word_data or 'secret_word' not in secret_word_data:
              error = 'Secret word configuration is missing or invalid.'
-             print("Login failed: Secret word file error.", file=sys.stderr)
+             logger.error("Login failed: Secret word file error.")
              return render_template_string(LOGIN_TEMPLATE, error=error)
         secret_word = secret_word_data.get("secret_word")
         onion_dir = find_first_onion_service_dir(KEYS_DIR)
         if not onion_dir:
             error = 'Cannot locate Tor key directory to verify passphrase.'
-            print("Login failed: Could not find Tor key directory.", file=sys.stderr)
+            logger.error("Login failed: Could not find Tor key directory.")
             return render_template_string(LOGIN_TEMPLATE, error=error)
         try:
             correct_passphrase = " ".join(get_passphrase(onion_dir, secret_word))
         except FileNotFoundError:
              error = 'Tor key file not found. Cannot verify passphrase.'
-             print("Login failed: Tor key file missing.", file=sys.stderr)
+             logger.error("Login failed: Tor key file missing.")
              return render_template_string(LOGIN_TEMPLATE, error=error)
         except Exception as e:
             error = f'Error generating expected passphrase: {e}'
-            print(f"Login failed: Error during passphrase generation - {e}", file=sys.stderr)
+            logger.error("Login failed: Error during passphrase generation - %s", e)
             return render_template_string(LOGIN_TEMPLATE, error=error)
         if request.form.get('passphrase') == correct_passphrase:
             session['logged_in'] = True
             session.permanent = True
             app.permanent_session_lifetime = datetime.timedelta(days=7)
-            print("User logged in.")
+            logger.info("User logged in.")
             return redirect(url_for('index'))
         else:
-            print("Login failed: Invalid Credentials.")
+            logger.error("Login failed: Invalid Credentials.")
             error = 'Invalid Credentials. Please try again.'
             time.sleep(1)
     return render_template_string(LOGIN_TEMPLATE, error=error)
@@ -1165,7 +1174,7 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
-    print("User logged out.")
+    logger.info("User logged out.")
     return redirect(url_for('index'))
 
 @app.route('/about')
@@ -1198,7 +1207,7 @@ def profile():
         profile_data['email'] = request.form.get('email', profile_data.get('email', '')).strip()
         profile_data['website'] = request.form.get('website', profile_data.get('website', '')).strip()
         save_json(PROFILE_FILE, profile_data)
-        print(f"Profile updated.")
+        logger.info("Profile updated.")
         return redirect(url_for('profile'))
     profile_data.setdefault('nickname', '')
     profile_data.setdefault('location', '')
@@ -1210,26 +1219,26 @@ def profile():
 @app.route('/post', methods=['POST'])
 def post():
     if not is_logged_in():
-        print("Error: Unauthorized attempt to post.", file=sys.stderr)
+        logger.error("Unauthorized attempt to post.")
         abort(403)
     content = request.form.get('content')
     if not content or not content.strip():
-         print("Post rejected: Empty content.")
+         logger.info("Post rejected: Empty content.")
          return redirect(url_for('index'))
     new_message_str, timestamp = create_message_string(content, request.form.get('reply_id'))
     if not new_message_str:
-        print("Error: Failed to create message string (check logs). Post rejected.", file=sys.stderr)
+        logger.error("Failed to create message string (check logs). Post rejected.")
         return redirect(url_for('index'))
     try:
         feed_data = load_json(FEED_FILE) or []
         if not isinstance(feed_data, list):
-            print(f"Warning: Feed file '{FEED_FILE}' contained invalid data. Resetting to empty list before appending.", file=sys.stderr)
+            logger.warning("Feed file '%s' contained invalid data. Resetting to empty list before appending.", FEED_FILE)
             feed_data = []
         feed_data.append(new_message_str)
         save_json(FEED_FILE, feed_data)
-        print(f"New post added with timestamp: {timestamp}")
+        logger.info("New post added with timestamp: %s", timestamp)
     except Exception as e:
-         print(f"Error saving post to feed file {FEED_FILE}: {e}", file=sys.stderr)
+         logger.error("Error saving post to feed file %s: %s", FEED_FILE, e)
          return redirect(url_for('index'))
     return redirect(url_for('index'))
 
@@ -1239,7 +1248,7 @@ def feed():
     if not isinstance(feed_data, list):
         return "", 200, {'Content-Type': 'text/plain; charset=utf-8'}
     if not SITE_NAME or SITE_NAME.startswith("tor_"):
-         print("Warning: /feed requested but SITE_NAME is not valid. Returning empty feed.", file=sys.stderr)
+         logger.warning("/feed requested but SITE_NAME is not valid. Returning empty feed.")
          return "", 200, {'Content-Type': 'text/plain; charset=utf-8'}
     site_feed = []
     for msg_str in feed_data:
@@ -1258,7 +1267,7 @@ def subs():
                          and len(d) == 56
                          and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
     except Exception as e:
-        print(f"Error accessing subscriptions directory '{SUBSCRIPTIONS_DIR}': {e}", file=sys.stderr)
+        logger.error("Error accessing subscriptions directory '%s': %s", SUBSCRIPTIONS_DIR, e)
     return "\n".join(sorted(sub_dirs)), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/<string:timestamp>')
@@ -1268,7 +1277,7 @@ def view_message(timestamp):
     if SITE_NAME and not SITE_NAME.startswith("tor_"):
         feed_data = load_json(FEED_FILE) or []
         if not isinstance(feed_data, list):
-             print(f"Warning: Feed file '{FEED_FILE}' is missing or invalid during message view.", file=sys.stderr)
+             logger.warning("Feed file '%s' is missing or invalid during message view.", FEED_FILE)
         else:
             for msg_str in feed_data:
                 if f"|{timestamp}|" in msg_str:
@@ -1278,7 +1287,7 @@ def view_message(timestamp):
                              ascii_msg = msg_str.encode('ascii').decode('ascii')
                              return ascii_msg, 200, {'Content-Type': 'text/plain; charset=ascii'}
                          except UnicodeEncodeError:
-                              print(f"Warning: Message {timestamp} contains non-ASCII characters, returning as UTF-8.", file=sys.stderr)
+                              logger.warning("Message %s contains non-ASCII characters, returning as UTF-8.", timestamp)
                               return msg_str, 200, {'Content-Type': 'text/plain; charset=utf-8'}
     abort(404, description="Message not found.")
 
@@ -1298,30 +1307,30 @@ def add_subscription():
          dir_name = onion_input
          onion_input += '.onion'
     if not (len(dir_name) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in dir_name)):
-         print(f"Add subscription failed: Invalid address format for {onion_input}", file=sys.stderr)
+         logger.error("Add subscription failed: Invalid address format for %s", onion_input)
          return redirect(url_for('index'))
     if dir_name == SITE_NAME:
-         print(f"Add subscription failed: Cannot subscribe to own site {onion_input}", file=sys.stderr)
+         logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
          return redirect(url_for('index'))
     subscription_dir = os.path.join(SUBSCRIPTIONS_DIR, dir_name)
     if os.path.isdir(subscription_dir):
-        print(f"Subscription attempt for already subscribed site: {onion_input}")
+        logger.info("Subscription attempt for already subscribed site: %s", onion_input)
         return redirect(url_for('index'))
     about_info = {}
     try:
-        print(f"Attempting to fetch /about for new subscription: {onion_input}")
+        logger.info("Attempting to fetch /about for new subscription: %s", onion_input)
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         about_url = f"http://{onion_input}/about"
         r = requests.get(about_url, proxies=proxies, timeout=FETCH_TIMEOUT)
         r.raise_for_status()
         about_text = r.text.strip()
         if not about_text:
-            print(f"Warning: /about for {onion_input} returned empty response.")
+            logger.warning("/about for %s returned empty response.", onion_input)
         else:
             lines = about_text.splitlines()
             temp_info = {}
             if lines and lines[0].strip().lower() != onion_input:
-                 print(f"Warning: /about first line '{lines[0]}' does not match expected onion address '{onion_input}'")
+                 logger.warning("/about first line '%s' does not match expected onion address '%s'", lines[0], onion_input)
             for line in lines[1:]:
                  if ":" in line:
                      try:
@@ -1333,15 +1342,15 @@ def add_subscription():
                               if key == 'desc': key = 'description'
                               temp_info[key] = value
                      except ValueError:
-                          print(f"Warning: Malformed line in /about from {onion_input}: {line}", file=sys.stderr)
+                          logger.warning("Malformed line in /about from %s: %s", onion_input, line)
             about_info = temp_info
-            print(f"Successfully fetched /about info for {onion_input}: {about_info}")
+            logger.info("Successfully fetched /about info for %s: %s", onion_input, about_info)
     except requests.exceptions.Timeout:
-        print(f"Error fetching /about from {onion_input}: Timeout after {FETCH_TIMEOUT}s", file=sys.stderr)
+        logger.error("Error fetching /about from %s: Timeout after %s seconds", onion_input, FETCH_TIMEOUT)
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching /about from {onion_input}: {e}", file=sys.stderr)
+        logger.error("Error fetching /about from %s: %s", onion_input, e)
     except Exception as e:
-        print(f"Unexpected error fetching /about from {onion_input}: {e}", file=sys.stderr)
+        logger.error("Unexpected error fetching /about from %s: %s", onion_input, e)
     try:
         os.makedirs(subscription_dir, exist_ok=True)
         notes_file = os.path.join(subscription_dir, "notes.json")
@@ -1353,17 +1362,17 @@ def add_subscription():
             "website": about_info.get('website', '')
         }
         save_json(notes_file, notes_data)
-        print(f"Successfully added subscription: {onion_input} (Directory: {subscription_dir})")
-        print(f"Submitting initial fetch task for new subscription {dir_name}")
+        logger.info("Successfully added subscription: %s (Directory: %s)", onion_input, subscription_dir)
+        logger.info("Submitting initial fetch task for new subscription %s", dir_name)
         fetch_executor.submit(fetch_and_process_feed, dir_name)
     except Exception as e:
-        print(f"Error creating subscription directory or notes file for {onion_input}: {e}", file=sys.stderr)
+        logger.error("Error creating subscription directory or notes file for %s: %s", onion_input, e)
         if os.path.exists(subscription_dir):
              try:
                   if not os.listdir(subscription_dir):
                        os.rmdir(subscription_dir)
              except Exception as clean_e:
-                  print(f"Error cleaning up directory {subscription_dir} after failed add: {clean_e}", file=sys.stderr)
+                  logger.error("Error cleaning up directory %s after failed add: %s", subscription_dir, clean_e)
         return redirect(url_for('index'))
     return redirect(url_for('index'))
 
@@ -1371,12 +1380,12 @@ def fetch_and_process_feed(site_dir):
     site_onion = f"{site_dir}.onion"
     feed_url = f"http://{site_onion}/feed"
     cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
-    print(f"[Fetcher] Starting fetch for: {site_onion}")
+    logger.info("[Fetcher] Starting fetch for: %s", site_onion)
     new_messages_added = 0
     try:
         existing_cache = load_json(cache_file) or []
         if not isinstance(existing_cache, list):
-            print(f"[Fetcher] Warning: Invalid cache file {cache_file}. Starting fresh.", file=sys.stderr)
+            logger.warning("[Fetcher] Invalid cache file %s. Starting fresh.", cache_file)
             existing_cache = []
         existing_timestamps = set()
         valid_existing_cache = []
@@ -1386,7 +1395,7 @@ def fetch_and_process_feed(site_dir):
                  existing_timestamps.add(parsed['timestamp'])
                  valid_existing_cache.append(msg_str)
              elif parsed:
-                  print(f"[Fetcher] Warning: Found message from wrong site ({parsed['site']}) in cache {cache_file}. Discarding.", file=sys.stderr)
+                  logger.warning("[Fetcher] Found message from wrong site (%s) in cache %s. Discarding.", parsed['site'], cache_file)
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         fetched_content = None
         try:
@@ -1395,27 +1404,27 @@ def fetch_and_process_feed(site_dir):
                  try:
                      fetched_content = response.content.decode('utf-8', errors='replace')
                  except UnicodeDecodeError as ude:
-                     print(f"[Fetcher] Unicode decode error reading feed from {feed_url}: {ude}. Trying latin-1.", file=sys.stderr)
+                     logger.warning("[Fetcher] Unicode decode error reading feed from %s: %s. Trying latin-1.", feed_url, ude)
                      fetched_content = response.content.decode('latin-1', errors='replace')
         except requests.exceptions.Timeout:
-             print(f"[Fetcher] Timeout fetching {feed_url}", file=sys.stderr)
+             logger.error("[Fetcher] Timeout fetching %s", feed_url)
              return 0
         except requests.exceptions.RequestException as e:
-             print(f"[Fetcher] Error fetching {feed_url}: {e}", file=sys.stderr)
+             logger.error("[Fetcher] Error fetching %s: %s", feed_url, e)
              return 0
         except Exception as e:
-             print(f"[Fetcher] Unexpected error during fetch request for {feed_url}: {e}", file=sys.stderr)
+             logger.error("[Fetcher] Unexpected error during fetch request for %s: %s", feed_url, e)
              return 0
         if fetched_content is None:
-             print(f"[Fetcher] Failed to retrieve content from {feed_url}", file=sys.stderr)
+             logger.error("[Fetcher] Failed to retrieve content from %s", feed_url)
              if len(valid_existing_cache) != len(existing_cache):
-                  print(f"[Fetcher] Saving cleaned cache for {site_onion} after fetch failure.", file=sys.stderr)
+                  logger.info("[Fetcher] Saving cleaned cache for %s after fetch failure.", site_onion)
                   save_json(cache_file, valid_existing_cache)
              return 0
         if not fetched_content.strip():
-            print(f"[Fetcher] Empty feed received from {site_onion}")
+            logger.info("[Fetcher] Empty feed received from %s", site_onion)
             if len(valid_existing_cache) != len(existing_cache):
-                print(f"[Fetcher] Saving cleaned cache for {site_onion} after receiving empty feed.", file=sys.stderr)
+                logger.info("[Fetcher] Saving cleaned cache for %s after receiving empty feed.", site_onion)
                 save_json(cache_file, valid_existing_cache)
             return 0
         processed_new_messages = []
@@ -1428,12 +1437,12 @@ def fetch_and_process_feed(site_dir):
             parsed_msg = parse_message_string(msg_str)
             if not parsed_msg:
                 if malformed_lines < 5:
-                     print(f"[Fetcher] Invalid message format received from {site_onion}: {msg_str[:100]}...", file=sys.stderr)
+                     logger.warning("[Fetcher] Invalid message format received from %s: %s...", site_onion, msg_str[:100])
                 malformed_lines += 1
                 continue
             if parsed_msg['site'] != site_dir:
                  if mismatched_site_lines < 5:
-                      print(f"[Fetcher] SECURITY WARNING: Message received from {site_onion} claims to be from {parsed_msg['site']}. DISCARDING: {msg_str[:100]}...", file=sys.stderr)
+                      logger.warning("[Fetcher] SECURITY WARNING: Message received from %s claims to be from %s. DISCARDING: %s...", site_onion, parsed_msg['site'], msg_str[:100])
                  mismatched_site_lines +=1
                  continue
             if parsed_msg['timestamp'] not in existing_timestamps:
@@ -1443,38 +1452,36 @@ def fetch_and_process_feed(site_dir):
             else:
                  duplicate_timestamps += 1
         if malformed_lines > 5:
-             print(f"[Fetcher] ...skipped {malformed_lines - 5} more malformed lines from {site_onion}.", file=sys.stderr)
+             logger.warning("[Fetcher] ...skipped %d more malformed lines from %s.", malformed_lines - 5, site_onion)
         if mismatched_site_lines > 5:
-             print(f"[Fetcher] ...skipped {mismatched_site_lines - 5} more mismatched site lines from {site_onion}.", file=sys.stderr)
+             logger.warning("[Fetcher] ...skipped %d more mismatched site lines from %s.", mismatched_site_lines - 5, site_onion)
         if duplicate_timestamps > 0:
-             print(f"[Fetcher] Skipped {duplicate_timestamps} duplicate messages already present in cache for {site_onion}.")
+             logger.info("[Fetcher] Skipped %d duplicate messages already present in cache for %s.", duplicate_timestamps, site_onion)
         cache_updated = False
         if new_messages_added > 0:
             updated_cache = valid_existing_cache + processed_new_messages
             save_json(cache_file, updated_cache)
-            print(f"[Fetcher] Added {new_messages_added} new messages for {site_onion}. Cache size: {len(updated_cache)}")
+            logger.info("[Fetcher] Added %d new messages for %s. Cache size: %d", new_messages_added, site_onion, len(updated_cache))
             cache_updated = True
         else:
             if len(valid_existing_cache) != len(existing_cache):
-                 print(f"[Fetcher] No new messages, but saving cleaned cache for {site_onion}. Cache size: {len(valid_existing_cache)}")
+                 logger.info("[Fetcher] No new messages, but saving cleaned cache for %s. Cache size: %d", site_onion, len(valid_existing_cache))
                  save_json(cache_file, valid_existing_cache)
                  cache_updated = True
             else:
-                 print(f"[Fetcher] No new messages found for {site_onion}")
+                 logger.info("[Fetcher] No new messages found for %s", site_onion)
         if not cache_updated:
-            print(f"[Fetcher] Cache file {cache_file} remains unchanged.")
+            logger.info("[Fetcher] Cache file %s remains unchanged.", cache_file)
     except Exception as e:
-        print(f"[Fetcher] Unexpected error processing feed for {site_onion}: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
+        logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
         return 0
     return new_messages_added
 
 def run_fetch_cycle():
     global fetch_lock, fetch_executor, fetch_timer, FETCH_CYCLE
-    print(f"[{datetime.datetime.now().isoformat()}] Attempting scheduled fetch cycle...")
+    logger.info("[%s] Attempting scheduled fetch cycle...", datetime.datetime.now().isoformat())
     if fetch_lock.acquire(blocking=False):
-        print("[Fetcher] Acquired lock for scheduled run.")
+        logger.info("[Fetcher] Acquired lock for scheduled run.")
         total_new_messages = 0
         sites_fetched_count = 0
         try:
@@ -1486,9 +1493,9 @@ def run_fetch_cycle():
                                      and len(d) == 56
                                      and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
             if not subscription_dirs:
-                print("[Fetcher] No valid subscription directories found.")
+                logger.info("[Fetcher] No valid subscription directories found.")
             else:
-                print(f"[Fetcher] Submitting {len(subscription_dirs)} sites for background fetching...")
+                logger.info("[Fetcher] Submitting %d sites for background fetching...", len(subscription_dirs))
                 futures = {fetch_executor.submit(fetch_and_process_feed, site_dir): site_dir for site_dir in subscription_dirs}
                 results = concurrent.futures.wait(futures)
                 sites_fetched_count = len(futures)
@@ -1499,44 +1506,42 @@ def run_fetch_cycle():
                          if new_count is not None:
                               total_new_messages += new_count
                          else:
-                              print(f'[Fetcher] Warning: Task for site {site} returned None.', file=sys.stderr)
+                              logger.error("[Fetcher] Warning: Task for site %s returned None.", site)
                      except Exception as exc:
-                          print(f'[Fetcher] Site {site} generated an exception during fetch: {exc}', file=sys.stderr)
+                          logger.error("[Fetcher] Site %s generated an exception during fetch: %s", site, exc, exc_info=True)
                 if results.not_done:
-                     print(f"[Fetcher] Warning: {len(results.not_done)} fetch tasks did not complete.", file=sys.stderr)
+                     logger.warning("[Fetcher] %d fetch tasks did not complete.", len(results.not_done))
                      for future in results.not_done:
                           site = futures[future]
-                          print(f"[Fetcher] Task for site {site} did not complete.", file=sys.stderr)
+                          logger.warning("[Fetcher] Task for site %s did not complete.", site)
             end_time = time.time()
             duration = end_time - start_time
-            print(f"[Fetcher] Scheduled fetch cycle completed in {duration:.2f} seconds.")
-            print(f"[Fetcher] Attempted fetch for {sites_fetched_count} sites, added {total_new_messages} total new messages across all feeds.")
+            logger.info("[Fetcher] Scheduled fetch cycle completed in %.2f seconds.", duration)
+            logger.info("[Fetcher] Attempted fetch for %d sites, added %d total new messages across all feeds.", sites_fetched_count, total_new_messages)
         except Exception as e:
-            print(f"[Fetcher] Error during scheduled fetch cycle coordination: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
+            logger.error("[Fetcher] Error during scheduled fetch cycle coordination: %s", e, exc_info=True)
         finally:
             fetch_lock.release()
-            print("[Fetcher] Released lock for scheduled run.")
+            logger.info("[Fetcher] Released lock for scheduled run.")
     else:
-        print("[Fetcher] Skipping scheduled run: Fetch lock already held (likely by manual fetch).")
+        logger.info("[Fetcher] Skipping scheduled run: Fetch lock already held (likely by manual fetch).")
     app_is_exiting = getattr(sys, 'is_exiting', False)
     if not app_is_exiting:
-        print(f"[Fetcher] Scheduling next fetch cycle in {FETCH_CYCLE} seconds.")
+        logger.info("[Fetcher] Scheduling next fetch cycle in %d seconds.", FETCH_CYCLE)
         fetch_timer = threading.Timer(FETCH_CYCLE, run_fetch_cycle)
         fetch_timer.daemon = True
         fetch_timer.start()
     else:
-         print("[Fetcher] Application is exiting, not scheduling next fetch cycle.")
+         logger.info("[Fetcher] Application is exiting, not scheduling next fetch cycle.")
 
 @app.route('/fetch_subscriptions', methods=['POST'])
 def fetch_subscriptions():
     if not is_logged_in():
         return jsonify({"error": "Authentication required"}), 403
     global fetch_lock, fetch_executor
-    print("[Fetcher] Received request to MANUALLY fetch subscriptions.")
+    logger.info("[Fetcher] Received request to MANUALLY fetch subscriptions.")
     if fetch_lock.acquire(blocking=False):
-        print("[Fetcher] Acquired lock for manual run.")
+        logger.info("[Fetcher] Acquired lock for manual run.")
         submitted_tasks = 0
         try:
             subscription_dirs = []
@@ -1546,58 +1551,57 @@ def fetch_subscriptions():
                                      and len(d) == 56
                                      and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
             if not subscription_dirs:
-                print("[Fetcher] No subscriptions found to fetch.")
+                logger.info("[Fetcher] No subscriptions found to fetch.")
                 fetch_lock.release()
-                print("[Fetcher] Released lock for manual run (no sites).")
+                logger.info("[Fetcher] Released lock for manual run (no sites).")
                 return jsonify({"message": "No subscriptions to fetch."})
-            print(f"[Fetcher] Submitting {len(subscription_dirs)} sites for background fetching (manual trigger)...")
+            logger.info("[Fetcher] Submitting %d sites for background fetching (manual trigger)...", len(subscription_dirs))
             for site_dir in subscription_dirs:
                 fetch_executor.submit(fetch_and_process_feed, site_dir)
                 submitted_tasks += 1
-            print(f"[Fetcher] Submitted {submitted_tasks} site(s) for background fetching.")
+            logger.info("[Fetcher] Submitted %d site(s) for background fetching.", submitted_tasks)
             return jsonify({"message": f"Started background fetch for {submitted_tasks} subscription(s). Refresh later to see results."})
         except Exception as e:
-            print(f"[Fetcher] Error submitting manual fetch tasks: {e}", file=sys.stderr)
+            logger.error("[Fetcher] Error submitting manual fetch tasks: %s", e, exc_info=True)
             return jsonify({"error": "Failed to start fetch process."}), 500
         finally:
              fetch_lock.release()
-             print("[Fetcher] Released lock for manual run (submission phase).")
+             logger.info("[Fetcher] Released lock for manual run (submission phase).")
     else:
-        print("[Fetcher] Manual fetch request denied: Fetch lock already held.")
+        logger.info("[Fetcher] Manual fetch request denied: Fetch lock already held.")
         return jsonify({"message": "Fetch operation already in progress. Please wait."}), 429
 
 @app.route('/remove_subscription/<string:site_dir>', methods=['POST'])
 def remove_subscription(site_dir):
     if not is_logged_in():
-        print(f"Unauthorized attempt to remove subscription: {site_dir}", file=sys.stderr)
+        logger.error("Unauthorized attempt to remove subscription: %s", site_dir)
         return jsonify({"error": "Authentication required"}), 403
     if not (len(site_dir) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in site_dir)):
-        print(f"Invalid site directory format in removal request: {site_dir}", file=sys.stderr)
+        logger.error("Invalid site directory format in removal request: %s", site_dir)
         return jsonify({"error": "Invalid subscription identifier format."}), 400
     base_dir = os.path.abspath(SUBSCRIPTIONS_DIR)
     target_path = os.path.abspath(os.path.join(base_dir, site_dir))
     if not target_path.startswith(base_dir + os.sep):
-        print(f"SECURITY ALERT: Path traversal attempt detected in remove_subscription for: {site_dir} (Resolved: {target_path})", file=sys.stderr)
+        logger.error("SECURITY ALERT: Path traversal attempt detected in remove_subscription for: %s (Resolved: %s)", site_dir, target_path)
         return jsonify({"error": "Invalid subscription identifier."}), 400
     if os.path.isdir(target_path):
         try:
             shutil.rmtree(target_path)
-            print(f"Removed subscription directory: {target_path}")
+            logger.info("Removed subscription directory: %s", target_path)
             return jsonify({"success": True, "message": f"Subscription {site_dir}.onion removed."})
         except FileNotFoundError:
-            print(f"Subscription directory not found during removal attempt (race condition?): {target_path}", file=sys.stderr)
+            logger.error("Subscription directory not found during removal attempt (race condition?): %s", target_path)
             return jsonify({"error": "Subscription not found."}), 404
         except PermissionError:
-             print(f"Permission error removing subscription directory: {target_path}", file=sys.stderr)
+             logger.error("Permission error removing subscription directory: %s", target_path)
              return jsonify({"error": "Permission denied while removing subscription."}), 500
         except Exception as e:
-            print(f"Error removing subscription directory {target_path}: {e}", file=sys.stderr)
+            logger.error("Error removing subscription directory %s: %s", target_path, e)
             return jsonify({"error": "An error occurred while removing the subscription."}), 500
     else:
-        print(f"Subscription directory not found: {target_path}", file=sys.stderr)
+        logger.error("Subscription directory not found: %s", target_path)
         return jsonify({"error": "Subscription not found."}), 404
 
-# Subscriptions panel content for AJAX refresh
 @app.route('/subscriptions_panel')
 def subscriptions_panel():
     user_feed_data = load_json(FEED_FILE) or []
@@ -1609,14 +1613,13 @@ def subscriptions_panel():
                 if parsed_msg['site'] == SITE_NAME:
                     user_processed_feed.append(parsed_msg)
                 else:
-                    print(f"Notice: Skipping message with mismatched site name '{parsed_msg['site']}' (expected '{SITE_NAME}') in main feed '{FEED_FILE}'.", file=sys.stderr)
-    # Load subscriptions
+                    logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed_msg['site'], SITE_NAME, FEED_FILE)
     subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
     combined_feed = user_processed_feed + subscription_raw_feed
     try:
         combined_feed.sort(key=lambda x: x['timestamp'], reverse=True)
     except Exception as e:
-        print(f"Error sorting combined feed: {e}", file=sys.stderr)
+        logger.error("Error sorting combined feed: %s", e)
     for post in combined_feed:
         if post['site'] != SITE_NAME:
             post['nickname'] = nicknames_map.get(post['site'])
@@ -1637,7 +1640,7 @@ def subscriptions_panel():
 
 def initialize_app():
     global SITE_NAME, onion_address
-    print(f"Initializing Blitter Node v{APP_VERSION} (Protocol: {PROTOCOL_VERSION})...")
+    logger.info("Initializing Blitter Node v%s (Protocol: %s)...", APP_VERSION, PROTOCOL_VERSION)
     os.makedirs(SUBSCRIPTIONS_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -1646,91 +1649,91 @@ def initialize_app():
     os.makedirs(static_dir, exist_ok=True)
     logo_path = os.path.join(static_dir, 'logo_128.png')
     if not os.path.exists(logo_path):
-         print(f"Warning: Logo file not found at {logo_path}. Ensure 'static/logo_128.png' exists.", file=sys.stderr)
-    print(f"Directories checked/created: {SUBSCRIPTIONS_DIR}, {KEYS_DIR}, {LOG_DIR}, static")
+         logger.warning("Logo file not found at %s. Ensure 'static/logo_128.png' exists.", logo_path)
+    logger.info("Directories checked/created: %s, %s, %s, static", SUBSCRIPTIONS_DIR, KEYS_DIR, LOG_DIR)
     secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
     if not os.path.exists(secret_file_path):
         try:
             save_json(secret_file_path, {"secret_word": "changeme"})
-            print(f'Default secret word file created at {secret_file_path}.')
-            print("***************************************************************************", file=sys.stderr)
-            print("IMPORTANT: Default secret word 'changeme' set. Change this for security!", file=sys.stderr)
-            print(f"Edit the file: {secret_file_path}", file=sys.stderr)
-            print("***************************************************************************", file=sys.stderr)
+            logger.info("Default secret word file created at %s.", secret_file_path)
+            logger.warning("***************************************************************************")
+            logger.warning("IMPORTANT: Default secret word 'changeme' set. Change this for security!")
+            logger.warning("Edit the file: %s", secret_file_path)
+            logger.warning("***************************************************************************")
         except Exception as e:
-            print(f"FATAL ERROR: Could not create secret word file at {secret_file_path}: {e}", file=sys.stderr)
+            logger.critical("FATAL ERROR: Could not create secret word file at %s: %s", secret_file_path, e)
             sys.exit(1)
     else:
         try:
             secret_data = load_json(secret_file_path)
             if not secret_data or 'secret_word' not in secret_data:
-                 print(f"Warning: Secret word file {secret_file_path} exists but is invalid or empty.", file=sys.stderr)
+                 logger.warning("Secret word file %s exists but is invalid or empty.", secret_file_path)
             elif secret_data['secret_word'] == 'changeme':
-                 print("***************************************************************************", file=sys.stderr)
-                 print("WARNING: Using default secret word 'changeme'. Change this for security!", file=sys.stderr)
-                 print(f"Edit the file: {secret_file_path}", file=sys.stderr)
-                 print("***************************************************************************", file=sys.stderr)
+                 logger.warning("***************************************************************************")
+                 logger.warning("WARNING: Using default secret word 'changeme'. Change this for security!")
+                 logger.warning("Edit the file: %s", secret_file_path)
+                 logger.warning("***************************************************************************")
         except Exception as e:
-             print(f"Warning: Could not read or parse secret word file {secret_file_path}: {e}", file=sys.stderr)
+             logger.warning("Could not read or parse secret word file %s: %s", secret_file_path, e)
     if not os.path.exists(PROFILE_FILE):
-        print(f"Profile file '{PROFILE_FILE}' not found, creating default.")
+        logger.info("Profile file '%s' not found, creating default.", PROFILE_FILE)
         save_json(PROFILE_FILE, {
           "nickname": "User",
           "location": "", "description": "My Blitter profile.",
           "email": "", "website": ""
         })
     else:
-         print(f"Profile file found: {PROFILE_FILE}")
+         logger.info("Profile file found: %s", PROFILE_FILE)
          profile_data = load_json(PROFILE_FILE)
          if not isinstance(profile_data, dict):
-              print(f"Warning: Profile file '{PROFILE_FILE}' is empty or invalid. Resetting to default.", file=sys.stderr)
+              logger.warning("Profile file '%s' is empty or invalid. Resetting to default.", PROFILE_FILE)
               save_json(PROFILE_FILE, {"nickname": "User", "location": "", "description": "My Blitter profile.", "email": "", "website": ""})
     if not os.path.exists(FEED_FILE):
-        print(f"Feed file '{FEED_FILE}' not found, creating empty feed.")
+        logger.info("Feed file '%s' not found, creating empty feed.", FEED_FILE)
         save_json(FEED_FILE, [])
     else:
         feed_data = load_json(FEED_FILE)
         if not isinstance(feed_data, list):
-             print(f"Warning: Feed file '{FEED_FILE}' does not contain a valid JSON list. Resetting to empty.", file=sys.stderr)
+             logger.warning("Feed file '%s' does not contain a valid JSON list. Resetting to empty.", FEED_FILE)
              save_json(FEED_FILE, [])
         else:
-             print(f"Feed file found: {FEED_FILE}")
+             logger.info("Feed file found: %s", FEED_FILE)
     if not STEM_AVAILABLE:
-        print("\n--- Tor Integration Disabled ---")
-        print("Skipping Tor setup because 'stem' library is not installed.")
-        print("Install it using: pip install stem")
+        logger.info("--- Tor Integration Disabled ---")
+        logger.info("Skipping Tor setup because 'stem' library is not installed.")
+        logger.info("Install it using: pip install stem")
         SITE_NAME = "tor_disabled"
         onion_address = None
         return
-    print("\n--- Starting Tor Onion Service Setup ---")
+    logger.info("--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
         key_blob = get_key_blob(onion_dir)
         if key_blob:
-            print(f"Using key from: {onion_dir}")
+            logger.info("Using key from: %s", onion_dir)
             if start_tor_hidden_service(key_blob):
-                print(f"--- Tor Onion Service setup successful. Site Name: {SITE_NAME} ---")
+                logger.info("--- Tor Onion Service setup successful. Site Name: %s ---", SITE_NAME)
             else:
-                print("--- Tor Onion Service setup failed. ---", file=sys.stderr)
+                logger.error("--- Tor Onion Service setup failed. ---")
                 SITE_NAME = "tor_failed"
                 onion_address = None
         else:
-            print(f"Failed to extract key blob from {onion_dir}.", file=sys.stderr)
+            logger.error("Failed to extract key blob from %s.", onion_dir)
             SITE_NAME = "tor_key_error"
             onion_address = None
     else:
-        print("No suitable Tor key directory found. Onion service not started.", file=sys.stderr)
+        logger.error("No suitable Tor key directory found. Onion service not started.")
         SITE_NAME = "tor_no_key"
         onion_address = None
     if SITE_NAME.startswith("tor_"):
-         print("\n*****************************************************", file=sys.stderr)
-         print(f"WARNING: Tor setup did not complete successfully (Status: {SITE_NAME}).", file=sys.stderr)
-         print("The application will run, but might not be accessible via Tor", file=sys.stderr)
-         print("and the site name used for posts may be incorrect.", file=sys.stderr)
-         print("Ensure Tor service is running, configured with ControlPort 9051", file=sys.stderr)
-         print("and a valid v3 key exists in the 'keys' directory.", file=sys.stderr)
-         print("Check Tor logs (usually /var/log/tor/log or similar) for details.", file=sys.stderr)
-         print("*****************************************************\n", file=sys.stderr)
+         logger.warning("\n*****************************************************")
+         logger.warning("WARNING: Tor setup did not complete successfully (Status: %s).", SITE_NAME)
+         logger.warning("The application will run, but might not be accessible via Tor")
+         logger.warning("and the site name used for posts may be incorrect.")
+         logger.warning("Ensure Tor service is running, configured with ControlPort 9051")
+         logger.warning("and a valid v3 key exists in the 'keys' directory.")
+         logger.warning("Check Tor logs (usually /var/log/tor/log or similar) for details.")
+         logger.warning("*****************************************************\n")
     if onion_dir and not SITE_NAME.startswith("tor_"):
         try:
             secret_word = None
@@ -1738,51 +1741,49 @@ def initialize_app():
             if secret_word_data and 'secret_word' in secret_word_data:
                 secret_word = secret_word_data.get("secret_word")
             if secret_word:
-                 print(f'Using secret word from {secret_file_path} to derive passphrase.')
+                 logger.info("Using secret word from %s to derive passphrase.", secret_file_path)
                  passphrase_words = get_passphrase(onion_dir, secret_word)
                  passphrase = " ".join(passphrase_words)
-                 print("\n------------------------------------------------------")
-                 print(f'--- Passphrase for local user login is: "{passphrase}" ---')
-                 print("------------------------------------------------------\n")
+                 logger.info("-" * (len(passphrase)+ 22) )
+                 logger.info('--- Passphrase: "%s" ---', passphrase)
+                 logger.info("-" * (len(passphrase)+ 22) )
             else:
-                print("\n--- Cannot display passphrase: Could not read secret word from file. ---", file=sys.stderr)
+                logger.info("--- Cannot display passphrase: Could not read secret word from file. ---")
         except FileNotFoundError:
-             print(f"\n--- Cannot display passphrase: Necessary file not found (key or secret word). ---", file=sys.stderr)
+             logger.info("--- Cannot display passphrase: Necessary file not found (key or secret word). ---")
         except Exception as e:
-            print(f"\n--- Warning: Error generating or displaying passphrase: {e} ---", file=sys.stderr)
+            logger.info("--- Warning: Error generating or displaying passphrase: %s ---", e)
     elif onion_dir:
-         print("\n--- Cannot display passphrase due to Tor setup issue. ---", file=sys.stderr)
+         logger.info("--- Cannot display passphrase due to Tor setup issue. ---")
     else:
-        print("\n--- Cannot display passphrase as Tor key directory was not found. ---", file=sys.stderr)
+        logger.info("--- Cannot display passphrase as Tor key directory was not found. ---")
 
 if __name__ == '__main__':
     sys.is_exiting = False
     initialize_app()
     if not SITE_NAME.startswith("tor_"):
-        print("\n--- Starting initial background fetch cycle ---")
+        logger.info("--- Starting initial background fetch cycle ---")
         initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
         initial_fetch_thread.start()
     else:
-        print("\n--- Skipping initial background fetch due to Tor setup issue ---")
-    print(f"\n--- Starting Flask server ---")
+        logger.info("--- Skipping initial background fetch due to Tor setup issue ---")
+    logger.info("--- Starting Flask server ---")
     if onion_address:
-        print(f"Site Address: http://{onion_address}")
+        logger.info("Site Address: http://%s", onion_address)
     else:
-        print(f"Site Address: N/A (Tor Status: {SITE_NAME})")
-    print(f"Local Access: http://{FLASK_HOST}:{FLASK_PORT}")
-    print("Press Ctrl+C to stop.")
+        logger.info("Site Address: N/A (Tor Status: %s)", SITE_NAME)
+    logger.info("Local Access: http://%s:%s", FLASK_HOST, FLASK_PORT)
+    logger.info("Press Ctrl+C to stop.")
     try:
         app.run(debug=False, host=FLASK_HOST, port=FLASK_PORT, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
-         print("\nCtrl+C received, shutting down...")
+         logger.info("Ctrl+C received, shutting down...")
     except SystemExit as e:
-         print(f"\nSystem exit called ({e}). Shutting down...")
+         logger.info("System exit called (%s). Shutting down...", e)
     except Exception as e:
-         print(f"\nFlask server encountered an error: {e}", file=sys.stderr)
-         import traceback
-         traceback.print_exc()
+         logger.error("Flask server encountered an error: %s", e, exc_info=True)
     finally:
-         print("\nInitiating shutdown sequence...")
+         logger.info("Initiating shutdown sequence...")
          sys.is_exiting = True
          cleanup_tor_service()
-         print("\nExiting Blitter Node.")
+         logger.info("Exiting Blitter Node.")
