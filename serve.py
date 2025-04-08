@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.7'
+APP_VERSION = '0.2.8'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 
 import os
@@ -14,6 +14,7 @@ import requests
 import concurrent.futures
 import threading
 import shutil
+import sqlite3
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
 from markupsafe import escape
 import re
@@ -43,15 +44,13 @@ try:
 except ImportError:
     STEM_AVAILABLE = False
     logger.warning("'stem' library not found. Tor integration will be disabled.")
-    logger.warning("Install it using: pip install stem")
+    logger.warning("Check tor is installed and then install Python requirements with:\npip install stem Flask MarkupSafe requests[socks]\n")
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # --- Constants and Configuration ---
-PROFILE_FILE = 'profile.json'
-FEED_FILE = 'feed.json'
-SUBSCRIPTIONS_DIR = 'subscriptions'
+DB_FILE = 'blitter.db'
 KEYS_DIR = 'keys'
 LOG_DIR = 'log'
 SECRET_WORD_FILE = 'secret_word'
@@ -73,7 +72,191 @@ fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 fetch_lock = threading.Lock()
 fetch_timer = None
 
-# --- Helper Functions for Code Reduction ---
+# --- Database Functions ---
+
+def init_db():
+    """Initializes (or upgrades) the SQLite database with two tables: profiles and posts."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS profiles (
+            site TEXT PRIMARY KEY,
+            nickname TEXT,
+            location TEXT,
+            description TEXT,
+            email TEXT,
+            website TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS posts (
+            site TEXT,
+            timestamp TEXT,
+            protocol TEXT,
+            reply_id TEXT,
+            expiration TEXT,
+            flags TEXT,
+            length_field TEXT,
+            content TEXT,
+            PRIMARY KEY (site, timestamp)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def get_db_connection():
+    return sqlite3.connect(DB_FILE)
+
+def get_local_profile():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM profiles WHERE site = ?", (SITE_NAME,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return dict(zip(["site", "nickname", "location", "description", "email", "website"], row))
+    return {}
+
+def update_local_profile(profile_data):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+         INSERT INTO profiles (site, nickname, location, description, email, website)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(site) DO UPDATE SET 
+            nickname=excluded.nickname,
+            location=excluded.location,
+            description=excluded.description,
+            email=excluded.email,
+            website=excluded.website
+    """, (SITE_NAME,
+          profile_data.get("nickname", ""),
+          profile_data.get("location", ""),
+          profile_data.get("description", ""),
+          profile_data.get("email", ""),
+          profile_data.get("website", "")))
+    conn.commit()
+    conn.close()
+
+def get_profile(site):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM profiles WHERE site = ?", (site,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return dict(zip(["site", "nickname", "location", "description", "email", "website"], row))
+    return {}
+
+def upsert_subscription_profile(site, info):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+         INSERT INTO profiles (site, nickname, location, description, email, website)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(site) DO UPDATE SET
+            nickname=excluded.nickname,
+            location=excluded.location,
+            description=excluded.description,
+            email=excluded.email,
+            website=excluded.website
+    """, (site,
+          info.get('nickname', ''),
+          info.get('location', ''),
+          info.get('description', ''),
+          info.get('email', ''),
+          info.get('website', '')))
+    conn.commit()
+    conn.close()
+
+def insert_post_from_message(msg_str):
+    parts = parse_message_string(msg_str)
+    if not parts:
+        return False
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT OR IGNORE INTO posts (site, timestamp, protocol, reply_id, expiration, flags, length_field, content)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (parts['site'], parts['timestamp'], parts['protocol'], parts['reply_id'],
+              parts['expiration'], parts['flags'], parts['len'], parts['content']))
+        conn.commit()
+    except Exception as e:
+        logger.error("DB insert error: %s", e)
+        return False
+    finally:
+        conn.close()
+    return True
+
+def get_local_feed():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM posts WHERE site = ? ORDER BY timestamp DESC", (SITE_NAME,))
+    rows = c.fetchall()
+    conn.close()
+    feed = []
+    for row in rows:
+        post = dict(zip(["site", "timestamp", "protocol", "reply_id", "expiration", "flags", "length_field", "content"], row))
+        post['len'] = post.pop("length_field")
+        post['display_timestamp'] = format_timestamp_for_display(post['timestamp'])
+        post['display_content'] = post['content']
+        feed.append(post)
+    return feed
+
+def get_all_posts():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM posts ORDER BY timestamp DESC")
+    rows = c.fetchall()
+    conn.close()
+    all_posts = []
+    for row in rows:
+        post = dict(zip(["site", "timestamp", "protocol", "reply_id", "expiration", "flags", "length_field", "content"], row))
+        post['len'] = post.pop("length_field")
+        post['display_timestamp'] = format_timestamp_for_display(post['timestamp'])
+        post['display_content'] = post['content']
+        all_posts.append(post)
+    return all_posts
+
+def get_post(site, timestamp):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM posts WHERE site = ? AND timestamp = ?", (site, timestamp))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        post = dict(zip(["site", "timestamp", "protocol", "reply_id", "expiration", "flags", "length_field", "content"], row))
+        post['len'] = post.pop("length_field")
+        post['display_timestamp'] = format_timestamp_for_display(post['timestamp'])
+        post['display_content'] = post['content']
+        return post
+    return None
+
+def get_all_subscriptions():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM profiles WHERE site <> ?", (SITE_NAME,))
+    rows = c.fetchall()
+    conn.close()
+    subs = []
+    for row in rows:
+        sub = dict(zip(["site", "nickname", "location", "description", "email", "website"], row))
+        subs.append(sub)
+    return subs
+
+def get_combined_feed():
+    posts = get_all_posts()
+    for post in posts:
+        if post['site'] != SITE_NAME:
+            prof = get_profile(post['site'])
+            post['nickname'] = prof.get('nickname', '')
+        else:
+            local_prof = get_local_profile()
+            post['nickname'] = local_prof.get('nickname', 'User')
+    return posts
+
+# --- Helper Functions ---
 
 def is_valid_onion_address(addr):
     return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
@@ -96,35 +279,31 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
         logger.critical("FATAL ERROR: Failed to load BIP-0039 wordlist '%s': %s", filepath, e)
         sys.exit(1)
 
-def load_json(filename):
+def get_passphrase(service_dir, secret_word) -> list:
+    bip39 = load_bip39_wordlist()
+    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with open(key_file_path, "rb") as f:
+            f.seek(-64, os.SEEK_END)
+            payload = f.read(64)
+            if len(payload) != 64:
+                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
     except FileNotFoundError:
-        if 'feedcache.json' not in filename and 'notes.json' not in filename:
-            logger.info("File not found %s, returning None.", filename)
-        return None
-    except json.JSONDecodeError as e:
-        logger.warning("Could not decode JSON from %s: %s", filename, e)
-        return None
-    except Exception as e:
-        logger.error("Error loading JSON from %s: %s", filename, e)
-        return None
-
-def save_json(filename, data):
-    try:
-        dir_name = os.path.dirname(filename)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.error("Key file not found at %s", key_file_path)
+        raise
     except IOError as e:
-        logger.error("Could not write JSON to %s: %s", filename, e)
-    except Exception as e:
-        logger.error("Unexpected error saving JSON to %s: %s", filename, e)
+        logger.error("Error reading key file %s: %s", key_file_path, e)
+        raise
 
-def is_logged_in():
-    return 'logged_in' in session and session['logged_in']
+    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
+    digest_int = int.from_bytes(digest, byteorder="big")
+    truncated = digest_int >> (256 - 66)
+    words = []
+    for i in range(6):
+        shift = (6 - i - 1) * 11
+        index = (truncated >> shift) & 0x7FF
+        words.append(bip39[index])
+    return words
 
 def get_current_timestamp_hex():
     ns_timestamp = time.time_ns()
@@ -146,7 +325,7 @@ def format_timestamp_for_display(hex_timestamp):
             suffix = suffixes.get(day % 10, 'th')
         formatted = dt_object.strftime(f'%d{suffix} %b \'%y %H:%M:%S.%f')[:-3] + ' (UTC)'
         return formatted
-    except (ValueError, TypeError, OverflowError):
+    except Exception:
         return "Invalid Timestamp"
 
 def parse_message_string(msg_str):
@@ -158,7 +337,6 @@ def parse_message_string(msg_str):
     protocol, site, timestamp, reply_id, expiration, flag_int, length_field, content = parts
     if len(protocol) != 4 or not all(c in string.hexdigits for c in protocol): return None
     if len(site) != 56 or not all(c in string.ascii_lowercase + string.digits + '234567' for c in site): return None
-    if len(timestamp) != 16 or not all(c in string.hexdigits for c in timestamp): return None
     reply_parts = reply_id.split(':')
     if len(reply_parts) != 2: return None
     if len(reply_id) != len(NULL_REPLY_ADDRESS): return None
@@ -176,13 +354,11 @@ def parse_message_string(msg_str):
         'protocol': protocol,
         'site': site,
         'timestamp': timestamp,
-        'display_timestamp': format_timestamp_for_display(timestamp),
         'reply_id': reply_id,
-        'content': content,
-        'display_content': content,
         'expiration': expiration,
         'flags': flag_int,
         'len': length_field,
+        'content': content,
         'raw_message': msg_str
     }
 
@@ -232,73 +408,18 @@ def bmd2html(bmd_string):
     html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
     return html_string
 
-def get_passphrase(service_dir, secret_word) -> list:
-    bip39 = load_bip39_wordlist()
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
-    try:
-        with open(key_file_path, "rb") as f:
-            f.seek(-64, os.SEEK_END)
-            payload = f.read(64)
-            if len(payload) != 64:
-                raise IOError(f"Could not read the last 64 bytes from {key_file_path}")
-    except FileNotFoundError:
-        logger.error("Key file not found at %s", key_file_path)
-        raise
-    except IOError as e:
-        logger.error("Error reading key file %s: %s", key_file_path, e)
-        raise
+def normalize_onion_address(onion_input):
+    onion_input = onion_input.strip().lower().replace("http://", "").replace("https://", "")
+    if onion_input.endswith('/'):
+        onion_input = onion_input[:-1]
+    if onion_input.endswith('.onion'):
+        dir_name = onion_input[:-6]
+    else:
+        dir_name = onion_input
+        onion_input += '.onion'
+    return onion_input, dir_name
 
-    digest = hashlib.sha256(payload + secret_word.encode("utf-8")).digest()
-    digest_int = int.from_bytes(digest, byteorder="big")
-    truncated = digest_int >> (256 - 66)
-    words = []
-    for i in range(6):
-        shift = (6 - i - 1) * 11
-        index = (truncated >> shift) & 0x7FF
-        words.append(bip39[index])
-    return words
-
-def load_subscriptions():
-    """
-    Utility function to load subscription data and cached feed messages.
-    Returns a tuple: (subscriptions_with_nicknames, subscription_raw_feed, nicknames_map)
-    """
-    subscriptions_with_nicknames = []
-    subscription_raw_feed = []
-    nicknames_map = {}
-    try:
-        if os.path.isdir(SUBSCRIPTIONS_DIR):
-            subscription_dirs_list = sorted([d for d in os.listdir(SUBSCRIPTIONS_DIR) if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))])
-            for site_dir in subscription_dirs_list:
-                nickname = None
-                notes_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'notes.json')
-                notes_data = load_json(notes_file)
-                if notes_data and isinstance(notes_data, dict) and notes_data.get('nickname'):
-                    nickname = notes_data['nickname']
-                subscriptions_with_nicknames.append({'site': site_dir, 'nickname': nickname})
-                nicknames_map[site_dir] = nickname
-                cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
-                cached_data = load_json(cache_file) or []
-                if isinstance(cached_data, list):
-                    for msg_str in cached_data:
-                        parsed_msg = parse_message_string(msg_str)
-                        if parsed_msg:
-                            if parsed_msg['site'] == site_dir:
-                                subscription_raw_feed.append(parsed_msg)
-                            else:
-                                logger.warning("Message site '%s' in cache file '%s' does not match directory '%s'. Skipping display.", parsed_msg['site'], cache_file, site_dir)
-                        else:
-                            logger.info("Noped: %s", msg_str)
-                elif cached_data is not None:
-                    logger.warning("Cache file '%s' is not a valid JSON list. Skipping.", cache_file)
-    except Exception as e:
-         logger.error("Error loading subscription data or notes: %s", e)
-         subscriptions_with_nicknames = []
-         subscription_raw_feed = []
-         nicknames_map = {}
-    return subscriptions_with_nicknames, subscription_raw_feed, nicknames_map
-
-# --- Tor Integration Functions ---
+# --- Tor Integration Functions (unchanged) ---
 
 def find_first_onion_service_dir(keys_dir):
     if not os.path.isdir(keys_dir):
@@ -642,7 +763,7 @@ INDEX_TEMPLATE = """
               subList.addEventListener("click", function(event) {
                   if (event.target.classList.contains("remove-link")) {
                       event.preventDefault();
-                      const siteDir = event.target.dataset.siteDir;
+                      const siteDir = event.target.dataset.site;
                       const siteOnion = siteDir + ".onion";
                       if (confirm(`Are you sure you want to remove the subscription for ${siteOnion}? This will delete the cached messages.`)) {
                           showStatus(`Removing subscription ${siteOnion}...`);
@@ -767,7 +888,7 @@ SUBSCRIPTIONS_TEMPLATE = """
            {% endif %}
            <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
            {% if logged_in %}
-               <a href="#" class="remove-link" data-site-dir="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
+               <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
            {% endif %}
         </li>
     {% else %}
@@ -926,163 +1047,12 @@ VIEW_THREAD_TEMPLATE = """
 </html>
 """
 
-# --- Additional Helper Functions ---
-
-def get_local_feed():
-    feed_data = load_json(FEED_FILE) or []
-    local_feed = []
-    for msg_str in feed_data:
-        parsed = parse_message_string(msg_str)
-        if parsed and parsed['site'] == SITE_NAME:
-            local_feed.append(parsed)
-        elif parsed:
-            logger.info("Skipping message with mismatched site name '%s' (expected '%s') in main feed '%s'.", parsed['site'], SITE_NAME, FEED_FILE)
-    return local_feed
-
-def sort_feed(feed):
-    return sorted(feed, key=lambda x: x['timestamp'], reverse=True)
-
-def get_subscription_dirs():
-    if os.path.isdir(SUBSCRIPTIONS_DIR):
-         return [d for d in os.listdir(SUBSCRIPTIONS_DIR)
-                     if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
-                     and len(d) == 56
-                     and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
-    return []
-
-def normalize_onion_address(onion_input):
-    onion_input = onion_input.strip().lower().replace("http://", "").replace("https://", "")
-    if onion_input.endswith('/'):
-        onion_input = onion_input[:-1]
-    if onion_input.endswith('.onion'):
-        dir_name = onion_input[:-6]
-    else:
-        dir_name = onion_input
-        onion_input += '.onion'
-    return onion_input, dir_name
-
-def get_common_context():
-    profile_data = load_json(PROFILE_FILE) or {}
-    return {
-        'header_section': render_template_string(HEADER_TEMPLATE, logged_in=is_logged_in(), profile=profile_data, site_name=SITE_NAME, onion_address=onion_address),
-        'footer_section': render_template_string(FOOTER_TEMPLATE, protocol_version=PROTOCOL_VERSION, app_version=APP_VERSION),
-        'site_name': SITE_NAME,
-        'onion_address': onion_address,
-        'profile': profile_data,
-        'MAX_MSG_LENGTH': MAX_MSG_LENGTH,
-        'bmd2html': bmd2html,
-        'null_reply_address': NULL_REPLY_ADDRESS,
-        'logged_in': is_logged_in()
-    }
-
-def get_combined_feed():
-    local_feed = get_local_feed()
-    # Get subscription data from the restored load_subscriptions function.
-    _, subscription_feed, nicknames_map = load_subscriptions()
-    combined = local_feed + subscription_feed
-    combined = sort_feed(combined)
-    common = get_common_context()
-    for post in combined:
-        if post['site'] != SITE_NAME:
-            post['nickname'] = nicknames_map.get(post['site'])
-        else:
-            post['nickname'] = common['profile'].get('nickname', 'User')
-    return combined
-
 # --- Flask Routes ---
-
-@app.route('/thread/<string:message_id>')
-def view_thread(message_id):
-    profile_data = load_json(PROFILE_FILE) or {}
-
-    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):
-        abort(400, description="Invalid message id format.")
-    message_site, message_timestamp = message_id.split(':')
-
-    if not is_valid_onion_address(message_site):
-        abort(400, description="Invalid blitter (onion) address.")
-
-    if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
-        abort(400, description="Invalid timestamp format.")
-
-    combined_feed = get_combined_feed()
-    selected_post = None
-    parent_post = None
-    for post in combined_feed:
-        if post['site'] == message_site and post['timestamp'] == message_timestamp:
-            selected_post = post
-            if post['reply_id'] != NULL_REPLY_ADDRESS:
-                for parent in combined_feed:
-                    if parent['site'] + ':' + parent['timestamp'] == post['reply_id']:
-                        parent_post = parent
-                        break
-                if not parent_post:
-                    parent_post = f"Parent post is not cached locally: http://{message_site}.onion/thread/{post['reply_id']}"
-            else:
-                parent_post = "This post is not a reply. It is an original bleet."
-            break
-
-    if not selected_post:
-        abort(404, description="Message not stored or cached on this Blitter site.")
-
-    def generate_children_html(parent, feed, level=1):
-        parent_id = f"{parent['site']}_{parent['timestamp']}"
-        children = [child for child in feed if child['reply_id'] == f"{parent['site']}:{parent['timestamp']}"]
-        if not children:
-            return ""
-        html = f'<div class="children" style="margin-left:{level * 20}px; border-left:1px dashed #555; padding-left:10px;">'
-        html += f'<a href="javascript:void(0);" onclick="toggleChildren(\'{parent_id}-children\');" id="{parent_id}-toggle">[-] Collapse replies</a>'
-        html += f'<div id="{parent_id}-children">'
-        for child in children:
-            child_id = f"{child['site']}_{child['timestamp']}"
-            # Add the own-post-highlight class if the child post is local
-            if child['site'] == SITE_NAME:
-                html += '<div class="post-box own-post-highlight" style="margin-top:10px;">'
-            else:
-                html += '<div class="post-box" style="margin-top:10px;">'
-            html += '<div class="post-meta">'
-            if child['site'] == SITE_NAME:
-                html += f'<span class="nickname">{profile_data.get("nickname", "Local user")}: </span>'
-            else:
-                if child.get("nickname"):
-                    html += f'<span class="nickname">{child["nickname"]}: </span>'
-            html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
-            html += f'{child["display_timestamp"]} '
-            html += f'| <a href="{url_for("view_message", timestamp=child["timestamp"])}" title="View raw message format">Raw</a> '
-            html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}"{' target="_blank"' if (child["site"]!=SITE_NAME) else ''} title="View thread">Thread</a>'
-            if child["reply_id"] != NULL_REPLY_ADDRESS:
-                html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
-            html += '</div>'
-            html += f'<div class="post-content">{bmd2html(child["display_content"])}</div>'
-            html += generate_children_html(child, feed, level+1)
-            html += '</div>'
-        html += '</div></div>'
-        return html
-
-    thread_section = generate_children_html(selected_post, combined_feed, 1)
-    utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    common = get_common_context()
-    view_thread_html = render_template_string(
-        VIEW_THREAD_TEMPLATE,
-        header_section=common['header_section'],
-        utc_now=utc_now,
-        logged_in=common['logged_in'],
-        parent_post=parent_post,
-        selected_post=selected_post,
-        thread_section=thread_section,
-        footer_section=common['footer_section'],
-        site_name=SITE_NAME,
-        profile=common['profile'],
-        MAX_MSG_LENGTH=MAX_MSG_LENGTH,
-        bmd2html=bmd2html,
-        null_reply_address=NULL_REPLY_ADDRESS
-    )         
-    return view_thread_html
 
 @app.route('/')
 def index():
     common = get_common_context()
-    local_feed = sort_feed(get_local_feed())
+    local_feed = get_local_feed()
     return render_template_string(
         INDEX_TEMPLATE,
         header_section=common['header_section'],
@@ -1103,7 +1073,13 @@ def login():
         return redirect(url_for('index'))
     error = None
     if request.method == 'POST':
-        secret_word_data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
+        secret_word_data = None
+        secret_word_file = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
+        try:
+            with open(secret_word_file, 'r', encoding='utf-8') as f:
+                secret_word_data = json.load(f)
+        except Exception as e:
+            logger.error("Login failed: Secret word file error (%s).", e)
         if not secret_word_data or 'secret_word' not in secret_word_data:
              error = 'Secret word configuration is missing or invalid.'
              logger.error("Login failed: Secret word file error.")
@@ -1144,18 +1120,18 @@ def logout():
 
 @app.route('/about')
 def about():
-    profile_data = load_json(PROFILE_FILE) or {}
+    local_profile = get_local_profile()
     display_site_name = onion_address or SITE_NAME
     if display_site_name.startswith("tor_"):
          display_site_name = "Unknown Site (Tor Setup Issue)"
     about_profile = []
     if not display_site_name.startswith("Unknown"):
         about_profile.append(f'{display_site_name}')
-    if profile_data.get("nickname"): about_profile.append(f'nickname: {profile_data["nickname"]}')
-    if profile_data.get("location"): about_profile.append(f'Loc: {profile_data["location"]}')
-    if profile_data.get("description"): about_profile.append(f'Desc: {profile_data["description"]}')
-    if profile_data.get("email"): about_profile.append(f'Email: {profile_data["email"]}')
-    if profile_data.get("website"): about_profile.append(f'Website: {profile_data["website"]}')
+    if local_profile.get("nickname"): about_profile.append(f'nickname: {local_profile["nickname"]}')
+    if local_profile.get("location"): about_profile.append(f'Loc: {local_profile["location"]}')
+    if local_profile.get("description"): about_profile.append(f'Desc: {local_profile["description"]}')
+    if local_profile.get("email"): about_profile.append(f'Email: {local_profile["email"]}')
+    if local_profile.get("website"): about_profile.append(f'Website: {local_profile["website"]}')
     if not about_profile:
          return "No profile information available.", 200, {'Content-Type': 'text/plain; charset=utf-8'}
     return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
@@ -1164,22 +1140,24 @@ def about():
 def profile():
     if not is_logged_in():
         return redirect(url_for('login'))
-    profile_data = load_json(PROFILE_FILE) or {}
+    local_profile = get_local_profile()
     if request.method == 'POST':
-        profile_data['nickname'] = request.form.get('nickname', profile_data.get('nickname', '')).strip()
-        profile_data['location'] = request.form.get('location', profile_data.get('location', '')).strip()
-        profile_data['description'] = request.form.get('description', profile_data.get('description', '')).strip()
-        profile_data['email'] = request.form.get('email', profile_data.get('email', '')).strip()
-        profile_data['website'] = request.form.get('website', profile_data.get('website', '')).strip()
-        save_json(PROFILE_FILE, profile_data)
-        logger.info("Profile updated.")
+        new_profile = {
+            'nickname': request.form.get('nickname', '').strip(),
+            'location': request.form.get('location', '').strip(),
+            'description': request.form.get('description', '').strip(),
+            'email': request.form.get('email', '').strip(),
+            'website': request.form.get('website', '').strip()
+        }
+        update_local_profile(new_profile)
+        logger.info("Local profile updated.")
         return redirect(url_for('profile'))
-    profile_data.setdefault('nickname', '')
-    profile_data.setdefault('location', '')
-    profile_data.setdefault('description', '')
-    profile_data.setdefault('email', '')
-    profile_data.setdefault('website', '')
-    return render_template_string(PROFILE_TEMPLATE, profile=profile_data)
+    local_profile.setdefault('nickname', '')
+    local_profile.setdefault('location', '')
+    local_profile.setdefault('description', '')
+    local_profile.setdefault('email', '')
+    local_profile.setdefault('website', '')
+    return render_template_string(PROFILE_TEMPLATE, profile=local_profile)
 
 @app.route('/post', methods=['POST'])
 def post():
@@ -1194,67 +1172,126 @@ def post():
     if not new_message_str:
         logger.error("Failed to create message string (check logs). Post rejected.")
         return redirect(url_for('index'))
-    try:
-        feed_data = load_json(FEED_FILE) or []
-        if not isinstance(feed_data, list):
-            logger.warning("Feed file '%s' contained invalid data. Resetting to empty list before appending.", FEED_FILE)
-            feed_data = []
-        feed_data.append(new_message_str)
-        save_json(FEED_FILE, feed_data)
+    if insert_post_from_message(new_message_str):
         logger.info("New post added with timestamp: %s", timestamp)
-    except Exception as e:
-         logger.error("Error saving post to feed file %s: %s", FEED_FILE, e)
-         return redirect(url_for('index'))
+    else:
+        logger.error("Error inserting post into database.")
     return redirect(url_for('index'))
 
 @app.route('/feed')
 def feed():
-    feed_data = load_json(FEED_FILE) or []
-    if not isinstance(feed_data, list):
-        return "", 200, {'Content-Type': 'text/plain; charset=utf-8'}
-    if not SITE_NAME or SITE_NAME.startswith("tor_"):
-         logger.warning("/feed requested but SITE_NAME is not valid. Returning empty feed.")
-         return "", 200, {'Content-Type': 'text/plain; charset=utf-8'}
-    site_feed = []
-    for msg_str in feed_data:
-         parsed_msg = parse_message_string(msg_str)
-         if parsed_msg and parsed_msg['site'] == SITE_NAME:
-             site_feed.append(msg_str)
-    return "\n".join(site_feed), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    posts = get_local_feed()
+    feed_lines = []
+    for post in posts:
+         message = f"|{post['protocol']}|{post['site']}|{post['timestamp']}|{post['reply_id']}|{post['expiration']}|{post['flags']}|{post['len']}|{post['content']}|"
+         feed_lines.append(message)
+    return "\n".join(feed_lines), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/subs')
 def subs():
-    sub_dirs = []
-    try:
-        if os.path.isdir(SUBSCRIPTIONS_DIR):
-             sub_dirs = [d for d in os.listdir(SUBSCRIPTIONS_DIR)
-                         if os.path.isdir(os.path.join(SUBSCRIPTIONS_DIR, d))
-                         and len(d) == 56
-                         and all(c in string.ascii_lowercase + string.digits + '234567' for c in d)]
-    except Exception as e:
-        logger.error("Error accessing subscriptions directory '%s': %s", SUBSCRIPTIONS_DIR, e)
-    return "\n".join(sorted(sub_dirs)), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    subs = get_all_subscriptions()
+    sites = [sub['site'] for sub in subs]
+    return "\n".join(sorted(sites)), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/<string:timestamp>')
 def view_message(timestamp):
     if not (len(timestamp) == 16 and all(c in string.hexdigits for c in timestamp)):
         abort(404, description="Invalid timestamp format.")
-    if SITE_NAME and not SITE_NAME.startswith("tor_"):
-        feed_data = load_json(FEED_FILE) or []
-        if not isinstance(feed_data, list):
-             logger.warning("Feed file '%s' is missing or invalid during message view.", FEED_FILE)
-        else:
-            for msg_str in feed_data:
-                if f"|{timestamp}|" in msg_str:
-                     parsed_msg = parse_message_string(msg_str)
-                     if parsed_msg and parsed_msg['site'] == SITE_NAME and parsed_msg['timestamp'] == timestamp:
-                         try:
-                             ascii_msg = msg_str.encode('ascii').decode('ascii')
-                             return ascii_msg, 200, {'Content-Type': 'text/plain; charset=ascii'}
-                         except UnicodeEncodeError:
-                              logger.warning("Message %s contains non-ASCII characters, returning as UTF-8.", timestamp)
-                              return msg_str, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    post = get_post(SITE_NAME, timestamp)
+    if post:
+        message = f"|{post['protocol']}|{post['site']}|{post['timestamp']}|{post['reply_id']}|{post['expiration']}|{post['flags']}|{post['len']}|{post['content']}|"
+        try:
+            ascii_msg = message.encode('ascii').decode('ascii')
+            return ascii_msg, 200, {'Content-Type': 'text/plain; charset=ascii'}
+        except UnicodeEncodeError:
+            return message, 200, {'Content-Type': 'text/plain; charset=utf-8'}
     abort(404, description="Message not found.")
+
+@app.route('/thread/<string:message_id>')
+def view_thread(message_id):
+    local_profile = get_local_profile()
+    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):
+        abort(400, description="Invalid message id format.")
+    message_site, message_timestamp = message_id.split(':')
+    if not is_valid_onion_address(message_site):
+        abort(400, description="Invalid blitter (onion) address.")
+    if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
+        abort(400, description="Invalid timestamp format.")
+
+    combined_feed = get_combined_feed()
+    selected_post = None
+    parent_post = None
+    for post in combined_feed:
+        if post['site'] == message_site and post['timestamp'] == message_timestamp:
+            selected_post = post
+            if post['reply_id'] != NULL_REPLY_ADDRESS:
+                for parent in combined_feed:
+                    if parent['site'] + ':' + parent['timestamp'] == post['reply_id']:
+                        parent_post = parent
+                        break
+                if not parent_post:
+                    parent_post = f"Parent post is not cached locally: http://{message_site}.onion/thread/{post['reply_id']}"
+            else:
+                parent_post = "This post is not a reply. It is an original bleet."
+            break
+
+    if not selected_post:
+        abort(404, description="Message not stored or cached on this Blitter site.")
+
+    def generate_children_html(parent, feed, level=1):
+        parent_id = f"{parent['site']}_{parent['timestamp']}"
+        children = [child for child in feed if child['reply_id'] == f"{parent['site']}:{parent['timestamp']}"]
+        if not children:
+            return ""
+        html = f'<div class="children" style="margin-left:{level * 20}px; border-left:1px dashed #555; padding-left:10px;">'
+        html += f'<a href="javascript:void(0);" onclick="toggleChildren(\'{parent_id}-children\');" id="{parent_id}-toggle">[-] Collapse replies</a>'
+        html += f'<div id="{parent_id}-children">'
+        for child in children:
+            child_id = f"{child['site']}_{child['timestamp']}"
+            if child['site'] == SITE_NAME:
+                html += '<div class="post-box own-post-highlight" style="margin-top:10px;">'
+            else:
+                html += '<div class="post-box" style="margin-top:10px;">'
+            html += '<div class="post-meta">'
+            if child['site'] == SITE_NAME:
+                html += f'<span class="nickname">{local_profile.get("nickname", "Local user")}: </span>'
+            else:
+                if child.get("nickname"):
+                    html += f'<span class="nickname">{child["nickname"]}: </span>'
+            html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
+            html += f'{child["display_timestamp"]} '
+            html += f'| <a href="{url_for("view_message", timestamp=child["timestamp"])}" title="View raw message format">Raw</a> '
+            if child["site"] != SITE_NAME:
+                html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}" target="_blank" title="View thread">Thread</a>'
+            else:
+                html += f'| <a href="{url_for("view_thread", message_id=child["site"] + ":" + child["timestamp"])}" title="View thread">Thread</a>'
+            if child["reply_id"] != NULL_REPLY_ADDRESS:
+                html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
+            html += '</div>'
+            html += f'<div class="post-content">{bmd2html(child["display_content"])}</div>'
+            html += generate_children_html(child, feed, level+1)
+            html += '</div>'
+        html += '</div></div>'
+        return html
+
+    thread_section = generate_children_html(selected_post, combined_feed, 1)
+    common = get_common_context()
+    view_thread_html = render_template_string(
+        VIEW_THREAD_TEMPLATE,
+        header_section=common['header_section'],
+        utc_now=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
+        logged_in=common['logged_in'],
+        parent_post=parent_post,
+        selected_post=selected_post,
+        thread_section=thread_section,
+        footer_section=common['footer_section'],
+        site_name=SITE_NAME,
+        profile=common['profile'],
+        MAX_MSG_LENGTH=MAX_MSG_LENGTH,
+        bmd2html=bmd2html,
+        null_reply_address=NULL_REPLY_ADDRESS
+    )
+    return view_thread_html
 
 @app.route('/add_subscription', methods=['POST'])
 def add_subscription():
@@ -1270,10 +1307,6 @@ def add_subscription():
     if dir_name == SITE_NAME:
          logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
          return redirect(url_for('index'))
-    subscription_dir = os.path.join(SUBSCRIPTIONS_DIR, dir_name)
-    if os.path.isdir(subscription_dir):
-        logger.info("Subscription attempt for already subscribed site: %s", onion_input)
-        return redirect(url_for('index'))
     about_info = {}
     try:
         logger.info("Attempting to fetch /about for new subscription: %s", onion_input)
@@ -1309,51 +1342,18 @@ def add_subscription():
         logger.error("Error fetching /about from %s: %s", onion_input, e)
     except Exception as e:
         logger.error("Unexpected error fetching /about from %s: %s", onion_input, e)
-    try:
-        os.makedirs(subscription_dir, exist_ok=True)
-        notes_file = os.path.join(subscription_dir, "notes.json")
-        notes_data = {
-            "nickname": about_info.get('nickname', ''),
-            "location": about_info.get('location', ''),
-            "description": about_info.get('description', ''),
-            "email": about_info.get('email', ''),
-            "website": about_info.get('website', '')
-        }
-        save_json(notes_file, notes_data)
-        logger.info("Successfully added subscription: %s (Directory: %s)", onion_input, subscription_dir)
-        logger.info("Submitting initial fetch task for new subscription %s", dir_name)
-        fetch_executor.submit(fetch_and_process_feed, dir_name)
-    except Exception as e:
-        logger.error("Error creating subscription directory or notes file for %s: %s", onion_input, e)
-        if os.path.exists(subscription_dir):
-             try:
-                  if not os.listdir(subscription_dir):
-                       os.rmdir(subscription_dir)
-             except Exception as clean_e:
-                  logger.error("Error cleaning up directory %s after failed add: %s", subscription_dir, clean_e)
-        return redirect(url_for('index'))
+    upsert_subscription_profile(dir_name, about_info)
+    logger.info("Subscription profile for %s upserted into database.", onion_input)
+    logger.info("Submitting initial fetch task for new subscription %s", dir_name)
+    fetch_executor.submit(fetch_and_process_feed, dir_name)
     return redirect(url_for('index'))
 
-def fetch_and_process_feed(site_dir):
-    site_onion = f"{site_dir}.onion"
+def fetch_and_process_feed(site):
+    site_onion = f"{site}.onion"
     feed_url = f"http://{site_onion}/feed"
-    cache_file = os.path.join(SUBSCRIPTIONS_DIR, site_dir, 'feedcache.json')
     logger.info("[Fetcher] Starting fetch for: %s", site_onion)
     new_messages_added = 0
     try:
-        existing_cache = load_json(cache_file) or []
-        if not isinstance(existing_cache, list):
-            logger.warning("[Fetcher] Invalid cache file %s. Starting fresh.", cache_file)
-            existing_cache = []
-        existing_timestamps = set()
-        valid_existing_cache = []
-        for msg_str in existing_cache:
-             parsed = parse_message_string(msg_str)
-             if parsed and parsed['site'] == site_dir:
-                 existing_timestamps.add(parsed['timestamp'])
-                 valid_existing_cache.append(msg_str)
-             elif parsed:
-                  logger.warning("[Fetcher] Found message from wrong site (%s) in cache %s. Discarding.", parsed['site'], cache_file)
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         fetched_content = None
         try:
@@ -1361,8 +1361,7 @@ def fetch_and_process_feed(site_dir):
                  response.raise_for_status()
                  try:
                      fetched_content = response.content.decode('utf-8', errors='replace')
-                 except UnicodeDecodeError as ude:
-                     logger.warning("[Fetcher] Unicode decode error reading feed from %s: %s. Trying latin-1.", feed_url, ude)
+                 except UnicodeDecodeError:
                      fetched_content = response.content.decode('latin-1', errors='replace')
         except requests.exceptions.Timeout:
              logger.error("[Fetcher] Timeout fetching %s", feed_url)
@@ -1375,64 +1374,51 @@ def fetch_and_process_feed(site_dir):
              return 0
         if fetched_content is None:
              logger.error("[Fetcher] Failed to retrieve content from %s", feed_url)
-             if len(valid_existing_cache) != len(existing_cache):
-                  logger.info("[Fetcher] Saving cleaned cache for %s after fetch failure.", site_onion)
-                  save_json(cache_file, valid_existing_cache)
              return 0
         if not fetched_content.strip():
             logger.info("[Fetcher] Empty feed received from %s", site_onion)
-            if len(valid_existing_cache) != len(existing_cache):
-                logger.info("[Fetcher] Saving cleaned cache for %s after receiving empty feed.", site_onion)
-                save_json(cache_file, valid_existing_cache)
             return 0
-        processed_new_messages = []
         malformed_lines = 0
         mismatched_site_lines = 0
         duplicate_timestamps = 0
         for line in fetched_content.strip().splitlines():
-            msg_str = line.strip()
-            if not msg_str: continue
-            parsed_msg = parse_message_string(msg_str)
-            if not parsed_msg:
-                if malformed_lines < 5:
-                     logger.warning("[Fetcher] Invalid message format received from %s: %s...", site_onion, msg_str[:100])
-                malformed_lines += 1
-                continue
-            if parsed_msg['site'] != site_dir:
-                 if mismatched_site_lines < 5:
+              msg_str = line.strip()
+              if not msg_str:
+                  continue
+              parsed_msg = parse_message_string(msg_str)
+              if not parsed_msg:
+                  if malformed_lines < 5:
+                      logger.warning("[Fetcher] Invalid message format received from %s: %s...", site_onion, msg_str)
+                  malformed_lines += 1
+                  continue
+              if parsed_msg['site'] != site:
+                  if mismatched_site_lines < 5:
                       logger.warning("[Fetcher] SECURITY WARNING: Message received from %s claims to be from %s. DISCARDING: %s...", site_onion, parsed_msg['site'], msg_str[:100])
-                 mismatched_site_lines +=1
-                 continue
-            if parsed_msg['timestamp'] not in existing_timestamps:
-                processed_new_messages.append(msg_str)
-                existing_timestamps.add(parsed_msg['timestamp'])
-                new_messages_added += 1
-            else:
-                 duplicate_timestamps += 1
+                  mismatched_site_lines += 1
+                  continue
+              conn = get_db_connection()
+              c = conn.cursor()
+              c.execute("SELECT 1 FROM posts WHERE site = ? AND timestamp = ?", (parsed_msg['site'], parsed_msg['timestamp']))
+              exists = c.fetchone()
+              conn.close()
+              if exists:
+                  duplicate_timestamps += 1
+                  continue
+              if insert_post_from_message(msg_str):
+                  new_messages_added += 1
         if malformed_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more malformed lines from %s.", malformed_lines - 5, site_onion)
         if mismatched_site_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more mismatched site lines from %s.", mismatched_site_lines - 5, site_onion)
         if duplicate_timestamps > 0:
-             logger.info("[Fetcher] Skipped %d duplicate messages already present in cache for %s.", duplicate_timestamps, site_onion)
-        cache_updated = False
+             logger.info("[Fetcher] Skipped %d duplicate messages for %s.", duplicate_timestamps, site_onion)
         if new_messages_added > 0:
-            updated_cache = valid_existing_cache + processed_new_messages
-            save_json(cache_file, updated_cache)
-            logger.info("[Fetcher] Added %d new messages for %s. Cache size: %d", new_messages_added, site_onion, len(updated_cache))
-            cache_updated = True
+             logger.info("[Fetcher] Added %d new messages for %s.", new_messages_added, site_onion)
         else:
-            if len(valid_existing_cache) != len(existing_cache):
-                 logger.info("[Fetcher] No new messages, but saving cleaned cache for %s. Cache size: %d", site_onion, len(valid_existing_cache))
-                 save_json(cache_file, valid_existing_cache)
-                 cache_updated = True
-            else:
-                 logger.info("[Fetcher] No new messages found for %s", site_onion)
-        if not cache_updated:
-            logger.info("[Fetcher] Cache file %s remains unchanged.", cache_file)
+             logger.info("[Fetcher] No new messages found for %s.", site_onion)
     except Exception as e:
-        logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
-        return 0
+         logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
+         return 0
     return new_messages_added
 
 def run_fetch_cycle():
@@ -1444,12 +1430,12 @@ def run_fetch_cycle():
         sites_fetched_count = 0
         try:
             start_time = time.time()
-            subscription_dirs = get_subscription_dirs()
-            if not subscription_dirs:
-                logger.info("[Fetcher] No valid subscription directories found.")
+            subscriptions = get_all_subscriptions()
+            if not subscriptions:
+                logger.info("[Fetcher] No subscriptions found.")
             else:
-                logger.info("[Fetcher] Submitting %d sites for background fetching...", len(subscription_dirs))
-                futures = {fetch_executor.submit(fetch_and_process_feed, site_dir): site_dir for site_dir in subscription_dirs}
+                logger.info("[Fetcher] Submitting %d subscriptions for background fetching...", len(subscriptions))
+                futures = {fetch_executor.submit(fetch_and_process_feed, sub['site']): sub['site'] for sub in subscriptions}
                 results = concurrent.futures.wait(futures)
                 sites_fetched_count = len(futures)
                 for future in results.done:
@@ -1461,26 +1447,21 @@ def run_fetch_cycle():
                          else:
                               logger.error("[Fetcher] Warning: Task for site %s returned None.", site)
                      except Exception as exc:
-                          logger.error("[Fetcher] Site %s generated an exception during fetch: %s", site, exc, exc_info=True)
+                          logger.error("[Fetcher] Subscription %s generated an exception during fetch: %s", site, exc, exc_info=True)
                 if results.not_done:
                      logger.warning("[Fetcher] %d fetch tasks did not complete.", len(results.not_done))
-                     for future in results.not_done:
-                          site = futures[future]
-                          logger.warning("[Fetcher] Task for site %s did not complete.", site)
-            end_time = time.time()
-            duration = end_time - start_time
-            logger.info("[Fetcher] Scheduled fetch cycle completed in %.2f seconds.", duration)
-            logger.info("[Fetcher] Attempted fetch for %d sites, added %d total new messages across all feeds.", sites_fetched_count, total_new_messages)
         except Exception as e:
-            logger.error("[Fetcher] Error during scheduled fetch cycle coordination: %s", e, exc_info=True)
+            logger.error("[Fetcher] Error during scheduled fetch cycle: %s", e, exc_info=True)
         finally:
             fetch_lock.release()
             logger.info("[Fetcher] Released lock for scheduled run.")
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.info("[Fetcher] Fetch cycle completed in %.2f seconds. Fetched %d subscriptions, %d new messages.", duration, sites_fetched_count, total_new_messages)
     else:
-        logger.info("[Fetcher] Skipping scheduled run: Fetch lock already held (likely by manual fetch).")
+        logger.info("[Fetcher] Skipping scheduled run: Fetch lock already held.")
     app_is_exiting = getattr(sys, 'is_exiting', False)
     if not app_is_exiting:
-        logger.info("[Fetcher] Scheduling next fetch cycle in %d seconds.", FETCH_CYCLE)
         fetch_timer = threading.Timer(FETCH_CYCLE, run_fetch_cycle)
         fetch_timer.daemon = True
         fetch_timer.start()
@@ -1492,80 +1473,65 @@ def fetch_subscriptions():
     if not is_logged_in():
         return jsonify({"error": "Authentication required"}), 403
     global fetch_lock, fetch_executor
-    logger.info("[Fetcher] Received request to MANUALLY fetch subscriptions.")
+    logger.info("[Fetcher] Received manual fetch request.")
     if fetch_lock.acquire(blocking=False):
-        logger.info("[Fetcher] Acquired lock for manual run.")
         submitted_tasks = 0
         try:
-            subscription_dirs = get_subscription_dirs()
-            if not subscription_dirs:
-                logger.info("[Fetcher] No subscriptions found to fetch.")
+            subscriptions = get_all_subscriptions()
+            if not subscriptions:
                 fetch_lock.release()
-                logger.info("[Fetcher] Released lock for manual run (no sites).")
                 return jsonify({"message": "No subscriptions to fetch."})
-            logger.info("[Fetcher] Submitting %d sites for background fetching (manual trigger)...", len(subscription_dirs))
-            for site_dir in subscription_dirs:
-                fetch_executor.submit(fetch_and_process_feed, site_dir)
+            for sub in subscriptions:
+                fetch_executor.submit(fetch_and_process_feed, sub['site'])
                 submitted_tasks += 1
-            logger.info("[Fetcher] Submitted %d site(s) for background fetching.", submitted_tasks)
             return jsonify({"message": f"Started background fetch for {submitted_tasks} subscription(s). Refresh later to see results."})
         except Exception as e:
-            logger.error("[Fetcher] Error submitting manual fetch tasks: %s", e, exc_info=True)
+            logger.error("[Fetcher] Error during manual fetch submission: %s", e, exc_info=True)
             return jsonify({"error": "Failed to start fetch process."}), 500
         finally:
              fetch_lock.release()
-             logger.info("[Fetcher] Released lock for manual run (submission phase).")
     else:
-        logger.info("[Fetcher] Manual fetch request denied: Fetch lock already held.")
         return jsonify({"message": "Fetch operation already in progress. Please wait."}), 429
 
-@app.route('/remove_subscription/<string:site_dir>', methods=['POST'])
-def remove_subscription(site_dir):
+@app.route('/remove_subscription/<string:site>', methods=['POST'])
+def remove_subscription(site):
     if not is_logged_in():
-        logger.error("Unauthorized attempt to remove subscription: %s", site_dir)
+        logger.error("Unauthorized attempt to remove subscription: %s", site)
         return jsonify({"error": "Authentication required"}), 403
-    if not (len(site_dir) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in site_dir)):
-        logger.error("Invalid site directory format in removal request: %s", site_dir)
+    if not (len(site) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in site)):
+        logger.error("Invalid site identifier format in removal request: %s", site)
         return jsonify({"error": "Invalid subscription identifier format."}), 400
-    base_dir = os.path.abspath(SUBSCRIPTIONS_DIR)
-    target_path = os.path.abspath(os.path.join(base_dir, site_dir))
-    if not target_path.startswith(base_dir + os.sep):
-        logger.error("SECURITY ALERT: Path traversal attempt detected in remove_subscription for: %s (Resolved: %s)", site_dir, target_path)
-        return jsonify({"error": "Invalid subscription identifier."}), 400
-    if os.path.isdir(target_path):
-        try:
-            shutil.rmtree(target_path)
-            logger.info("Removed subscription directory: %s", target_path)
-            return jsonify({"success": True, "message": f"Subscription {site_dir}.onion removed."})
-        except FileNotFoundError:
-            logger.error("Subscription directory not found during removal attempt (race condition?): %s", target_path)
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM profiles WHERE site = ? AND site <> ?", (site, SITE_NAME))
+        c.execute("DELETE FROM posts WHERE site = ? AND site <> ?", (site, SITE_NAME))
+        conn.commit()
+        if c.rowcount == 0:
             return jsonify({"error": "Subscription not found."}), 404
-        except PermissionError:
-             logger.error("Permission error removing subscription directory: %s", target_path)
-             return jsonify({"error": "Permission denied while removing subscription."}), 500
-        except Exception as e:
-            logger.error("Error removing subscription directory %s: %s", target_path, e)
-            return jsonify({"error": "An error occurred while removing the subscription."}), 500
-    else:
-        logger.error("Subscription directory not found: %s", target_path)
-        return jsonify({"error": "Subscription not found."}), 404
+    except Exception as e:
+        conn.rollback()
+        logger.error("Error removing subscription %s: %s", site, e)
+        return jsonify({"error": "An error occurred while removing the subscription."}), 500
+    finally:
+        conn.close()
+    return jsonify({"success": True, "message": f"Subscription {site}.onion removed."})
 
 @app.route('/subscriptions_panel')
 def subscriptions_panel():
-    local_feed = get_local_feed()
-    subscriptions_with_nicknames, subscription_raw_feed, nicknames_map = load_subscriptions()
-    combined_feed = local_feed + subscription_raw_feed
-    combined_feed = sort_feed(combined_feed)
+    combined_feed = get_all_posts()
     for post in combined_feed:
         if post['site'] != SITE_NAME:
-            post['nickname'] = nicknames_map.get(post['site'])
+            prof = get_profile(post['site'])
+            post['nickname'] = prof.get('nickname', '')
     common = get_common_context()
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    subscriptions = get_all_subscriptions()
     return render_template_string(
         SUBSCRIPTIONS_TEMPLATE,
         utc_time=utc_now,
         combined_feed=combined_feed,
-        subscriptions=subscriptions_with_nicknames,
+        subscriptions=subscriptions,
         logged_in=common['logged_in'],
         profile=common['profile'],
         bmd2html=bmd2html,
@@ -1573,10 +1539,26 @@ def subscriptions_panel():
         site_name=SITE_NAME
     )
 
+def get_common_context():
+    local_profile = get_local_profile()
+    return {
+        'header_section': render_template_string(HEADER_TEMPLATE, logged_in=is_logged_in(), profile=local_profile, site_name=SITE_NAME, onion_address=onion_address),
+        'footer_section': render_template_string(FOOTER_TEMPLATE, protocol_version=PROTOCOL_VERSION, app_version=APP_VERSION),
+        'site_name': SITE_NAME,
+        'onion_address': onion_address,
+        'profile': local_profile,
+        'MAX_MSG_LENGTH': MAX_MSG_LENGTH,
+        'bmd2html': bmd2html,
+        'null_reply_address': NULL_REPLY_ADDRESS,
+        'logged_in': is_logged_in()
+    }
+
+def is_logged_in():
+    return 'logged_in' in session and session['logged_in']
+
 def initialize_app():
     global SITE_NAME, onion_address
     logger.info("Initializing Blitter Node v%s (Protocol: %s)...", APP_VERSION, PROTOCOL_VERSION)
-    os.makedirs(SUBSCRIPTIONS_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1585,58 +1567,26 @@ def initialize_app():
     logo_path = os.path.join(static_dir, 'logo_128.png')
     if not os.path.exists(logo_path):
          logger.warning("Logo file not found at %s. Ensure 'static/logo_128.png' exists.", logo_path)
-    logger.info("Directories checked/created: %s, %s, %s, static", SUBSCRIPTIONS_DIR, KEYS_DIR, LOG_DIR)
-    secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
-    if not os.path.exists(secret_file_path):
-        try:
-            save_json(secret_file_path, {"secret_word": "changeme"})
-            logger.info("Default secret word file created at %s.", secret_file_path)
-            logger.warning("***************************************************************************")
-            logger.warning("IMPORTANT: Default secret word 'changeme' set. Change this for security!")
-            logger.warning("Edit the file: %s", secret_file_path)
-            logger.warning("***************************************************************************")
-        except Exception as e:
-            logger.critical("FATAL ERROR: Could not create secret word file at %s: %s", secret_file_path, e)
-            sys.exit(1)
+    logger.info("Directories checked/created: %s, %s, static", KEYS_DIR, LOG_DIR)
+    # Initialize the SQLite database
+    init_db()
+    # Ensure a local profile exists in the database.
+    local_profile = get_local_profile()
+    if not local_profile:
+         default_profile = {
+              "nickname": "User",
+              "location": "",
+              "description": "My Blitter profile.",
+              "email": "",
+              "website": ""
+         }
+         update_local_profile(default_profile)
+         logger.info("Default local profile inserted into DB.")
     else:
-        try:
-            secret_data = load_json(secret_file_path)
-            if not secret_data or 'secret_word' not in secret_data:
-                 logger.warning("Secret word file %s exists but is invalid or empty.", secret_file_path)
-            elif secret_data['secret_word'] == 'changeme':
-                 logger.warning("***************************************************************************")
-                 logger.warning("WARNING: Using default secret word 'changeme'. Change this for security!")
-                 logger.warning("Edit the file: %s", secret_file_path)
-                 logger.warning("***************************************************************************")
-        except Exception as e:
-             logger.warning("Could not read or parse secret word file %s: %s", secret_file_path, e)
-    if not os.path.exists(PROFILE_FILE):
-        logger.info("Profile file '%s' not found, creating default.", PROFILE_FILE)
-        save_json(PROFILE_FILE, {
-          "nickname": "User",
-          "location": "", "description": "My Blitter profile.",
-          "email": "", "website": ""
-        })
-    else:
-         logger.info("Profile file found: %s", PROFILE_FILE)
-         profile_data = load_json(PROFILE_FILE)
-         if not isinstance(profile_data, dict):
-              logger.warning("Profile file '%s' is empty or invalid. Resetting to default.", PROFILE_FILE)
-              save_json(PROFILE_FILE, {"nickname": "User", "location": "", "description": "My Blitter profile.", "email": "", "website": ""})
-    if not os.path.exists(FEED_FILE):
-        logger.info("Feed file '%s' not found, creating empty feed.", FEED_FILE)
-        save_json(FEED_FILE, [])
-    else:
-        feed_data = load_json(FEED_FILE)
-        if not isinstance(feed_data, list):
-             logger.warning("Feed file '%s' does not contain a valid JSON list. Resetting to empty.", FEED_FILE)
-             save_json(FEED_FILE, [])
-        else:
-             logger.info("Feed file found: %s", FEED_FILE)
+         logger.info("Local profile loaded from DB.")
     if not STEM_AVAILABLE:
         logger.info("--- Tor Integration Disabled ---")
         logger.info("Skipping Tor setup because 'stem' library is not installed.")
-        logger.info("Install it using: pip install stem")
         SITE_NAME = "tor_disabled"
         onion_address = None
         return
@@ -1672,7 +1622,10 @@ def initialize_app():
     if onion_dir and not SITE_NAME.startswith("tor_"):
         try:
             secret_word = None
-            secret_word_data = load_json(os.path.join(KEYS_DIR, SECRET_WORD_FILE))
+            secret_word_data = None
+            secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
+            with open(secret_file_path, 'r', encoding='utf-8') as f:
+                secret_word_data = json.load(f)
             if secret_word_data and 'secret_word' in secret_word_data:
                 secret_word = secret_word_data.get("secret_word")
             if secret_word:
