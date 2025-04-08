@@ -57,6 +57,7 @@ Blitter is:
   ControlPort 9051
   CookieAuthentication 1
   ```
+- A valid tor service directory and ed25519 secret key file (see below)
 
 ### Installation:
 
@@ -65,25 +66,61 @@ sudo apt install tor
 pip install flask stem requests[socks]
 ```
 
-### Launch:
+## Key Generation
+
+A tor v3 vanity onion address generator is now included, however it should be noted that a tool like [mkp224o](https://github.com/cathugger/mkp224o) leverages GPU power and will generate keys much faster, making slightly longer vanity prefixes viable. 
+
+## Keygen Requirements
+
+Before you can use the included keygen, you'll need to install PyNaCl via pip:
+
+```bash
+pip install pynacl
+```
+
+## Keygen Usage
+
+Run the script from the command line. Example:
+
+```bash
+python keygen.py --prefix abcd --key-dir keys --workers 4
+```
+
+### Keygen Command-Line Arguments
+
+- `--prefix`: Desired vanity prefix (max 4 Base32 characters). Leave empty for a random address.
+- `--key-dir`: Parent directory to create the onion service directory (default: `keys`).
+- `--workers`: Number of worker processes to use (default: the number of CPU cores).
+
+---
+
+## How the Keygen works
+
+1. **Key Generation:** Each worker process generates Ed25519 key pairs.
+2. **Address Calculation:** Computes the Tor v3 onion address using the public key.
+3. **Prefix Matching:** Workers check if the onion address starts with the specified prefix.
+4. **Progress Reporting:** The main process aggregates per-worker metrics and prints overall and individual key generation rates.
+5. **Service Setup:** Upon a match, the script creates a dedicated service directory and writes out the `hs_ed25519_secret_key` file.
+
+---
+
+
+## Launching Blitter:
 
 ```bash
 python blitter.py
 ```
 
+
+
 On first run:
-- A Tor onion service key will be generated.
+- **A Tor onion service key will be required (see above).**
 - You’ll get a passphrase derived from your key and a local secret word.
-  
-_Note: key generation not yet implemented; currently expects `hs_ed25519_secret_key` in the `keys/` directory.`_
-
-_Keys can be generated using a third party tool such as [mkp224o](https://github.com/cathugger/mkp224o), for example._
-
 - Visit `http://127.0.0.1:5000` and login with that passphrase.
 
-Your Blitter site will be available at something like:
+Your Blitter site will be available (using the [tor browser](https://www.torproject.org/)) at something like:
 ```
-http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion
+http://bleetmsropwd4542scsvoep3odcqof5hxgvt42heqw5zbsjxatcmxnyd.onion
 ```
 
 ---
