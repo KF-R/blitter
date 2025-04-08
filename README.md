@@ -50,7 +50,7 @@ pip install flask stem requests[socks]
 
 ## Key Generation
 
-A tor v3 vanity onion address generator is now included, however it should be noted that a tool like [mkp224o](https://github.com/cathugger/mkp224o) leverages GPU power and will generate keys much faster, making slightly longer vanity prefixes viable. 
+A tor v3 vanity onion address generator is now included, however it should be noted that a tool like [mkp224o](https://github.com/cathugger/mkp224o) leverages lower level code and optimisations and will generate keys **_much_** faster, making slightly longer vanity prefixes viable. 
 
 ## Keygen Requirements
 
