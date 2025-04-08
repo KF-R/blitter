@@ -29,24 +29,6 @@ Blitter is:
 
 ---
 
-### 🧠 Conceptual Diagram
-
-```
-          .--------.             .--------.
-          | Blitter| <--fetch--> | Blitter|
-          |  Node A|             |  Node B|
-          '--------'             '--------'
-              |                       |
-              |                       |
-         v3 Onion                 v3 Onion
-          Service                 Service
-              |                       |
-          User A's                User B's
-          microblog               microblog
-```
-
----
-
 ## ⚙️ Install & Run (Quickstart)
 
 ### Requirements:
