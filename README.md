@@ -20,7 +20,7 @@ Blitter is:
 
 ---
 
-## 💡 How It Works (For Humans)
+## 💡 How It Works
 
 1. You run Blitter and it spins up a Tor hidden service.
 2. Your posts (called *bleets*) are broadcast as a text-based feed over tor, with its `.onion` addresses.
@@ -114,7 +114,7 @@ http://bleetmsropwd4542scsvoep3odcqof5hxgvt42heqw5zbsjxatcmxnyd.onion
 
 ---
 
-## 📐 How It Works 
+## 📐 Technical Summary
 
 ### 🌐 Network Architecture
 
