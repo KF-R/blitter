@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.10'
+APP_VERSION = '0.2.11'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
-REQUIREMENTS_INSTALL_STRING = "pip install stem Flask MarkupSafe requests[socks]"
+REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
 import json
 import time
@@ -20,6 +20,7 @@ import html
 import re
 import hashlib
 import logging
+import argparse
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -547,7 +548,7 @@ def cleanup_tor_service():
         logger.info("Cleaning up Tor service: %s", tor_service_id)
         try:
             if tor_controller.is_authenticated() and tor_controller.is_alive():
-                 logger.info("Attempting DEL_ONION for %s (may fail if service is detached)...", tor_service_id)
+                 logger.info("Attempting DEL_ONION for %s ...", tor_service_id) # Note: may fail if service is detached
                  response = tor_controller.msg(f"DEL_ONION {tor_service_id}")
                  if response.is_ok():
                      logger.info("Successfully removed service %s", tor_service_id)
@@ -1589,7 +1590,8 @@ def initialize_app():
         if key_blob:
             logger.info("Using key from: %s", onion_dir)
             if start_tor_hidden_service(key_blob):
-                logger.info("--- Tor Onion Service setup successful. Site Name: %s ---", SITE_NAME)
+                logger.info("--- Tor Onion Service setup successful. ---")
+                logger.info("Site Name: %s", SITE_NAME)
 
                 # Ensure a matching local profile exists in the database.
                 local_profile = get_local_profile()
@@ -1639,47 +1641,46 @@ def initialize_app():
         logger.error("Exiting...")
         exit()  
 
-    if onion_dir:
-        try:
-            secret_word = None
-            secret_word_data = None
-            secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
-            with open(secret_file_path, 'r', encoding='utf-8') as f:
-                secret_word_data = json.load(f)
-            if secret_word_data and 'secret_word' in secret_word_data:
-                secret_word = secret_word_data.get("secret_word")
-            if secret_word:
-                 logger.info("Using secret word from %s to derive passphrase.", secret_file_path)
-                 passphrase_words = get_passphrase(onion_dir, secret_word)
-                 passphrase = " ".join(passphrase_words)
-                 logger.info("-" * (len(passphrase)+ 22) )
-                 logger.info('--- Passphrase: "%s" ---', passphrase)
-                 logger.info("-" * (len(passphrase)+ 22) )
-            else:
-                logger.info("--- Cannot display passphrase: Could not read secret word from file. ---")
-        except FileNotFoundError:
-             logger.info("--- Cannot display passphrase: Necessary file not found (key or secret word). ---")
-        except Exception as e:
+    # Parse secret word and display passphrase
+    try:
+        secret_word = None
+        secret_word_data = None
+        secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
+        with open(secret_file_path, 'r', encoding='utf-8') as f:
+            secret_word_data = json.load(f)
+        if secret_word_data and 'secret_word' in secret_word_data:
+            secret_word = secret_word_data.get("secret_word")
+        if secret_word:
+                logger.info("Using secret word from %s to derive passphrase.", secret_file_path)
+                passphrase_words = get_passphrase(onion_dir, secret_word)
+                passphrase = " ".join(passphrase_words)
+                logger.info("-" * (len(passphrase)+ 22) )
+                logger.info('--- Passphrase: "%s" ---', passphrase)
+                logger.info("-" * (len(passphrase)+ 22) )
+        else:
+            logger.info("--- Cannot display passphrase: Could not read secret word from file. ---")
+    except FileNotFoundError:
+            logger.info("--- Cannot display passphrase: Necessary file not found (key or secret word). ---")
+    except Exception as e:
             logger.info("--- Warning: Error generating or displaying passphrase: %s ---", e)
-    elif onion_dir:
-         logger.info("--- Cannot display passphrase due to Tor setup issue. ---")
-    else:
-        logger.info("--- Cannot display passphrase as Tor key directory was not found. ---")
 
 if __name__ == '__main__':
     sys.is_exiting = False
     initialize_app()
-    if not SITE_NAME.startswith("tor_"):
-        logger.info("--- Starting initial background fetch cycle ---")
-        initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
-        initial_fetch_thread.start()
-    else:
-        logger.info("--- Skipping initial background fetch due to Tor setup issue ---")
+
+    # Optionally assign custom Flask port
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int)
+    args = parser.parse_args()
+    if args.port:
+        FLASK_PORT = args.port
+
+    logger.info("--- Starting initial background fetch cycle ---")
+    initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
+    initial_fetch_thread.start()
+
     logger.info("--- Starting Flask server ---")
-    if onion_address:
-        logger.info("Site Address: http://%s", onion_address)
-    else:
-        logger.info("Site Address: N/A (Tor Status: %s)", SITE_NAME)
+    logger.info("Site Address: http://%s", onion_address)
     logger.info("Local Access: http://%s:%s", FLASK_HOST, FLASK_PORT)
     logger.info("Press Ctrl+C to stop.")
     try:
