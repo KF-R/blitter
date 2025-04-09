@@ -208,7 +208,9 @@ Blitter is proudly open-source under the GPLv3 license, promoting transparency, 
 ## 🤝 Acknowledgments
 
 - Tor Project (for the incredible onion routing platform)
-- The Internet (for being broken enough to warrant this)
+- Bitcoin project (for the BIP-0039 word list)
+- OpenAI (o3-mini-high greatly accelerated development)
+- The Internet (for still being broken enough to inspire projects like this)
 - You, for resisting authoritarian despots, imperialism, oligarchs and warmongers.
 
 ---
