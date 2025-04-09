@@ -45,7 +45,7 @@ Blitter is:
 
 ```bash
 sudo apt install tor
-pip install flask stem requests[socks]
+pip install flask stem markupsafe requests[socks]
 ```
 
 ## Key Generation
