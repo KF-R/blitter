@@ -139,8 +139,8 @@ Example:
 ```
 
 - **PROT**: Protocol version (e.g., `0002`)
-- **SITE**: Your onion address (56 chars)
-- **TIMESTAMP**: Nanosecond-precision timestamp in hex
+- **SITE**: Onion address of this message's origin (56 chars)
+- **TIMESTAMP**: Nanosecond-precision timestamp in hex used as a unique message identifier
 - **REPLY_ID**: Optional `site:timestamp` this message replies to
 - **EXPIRATION**: Reserved for future TTL
 - **FLAGS**: Reserved
