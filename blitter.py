@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.9'
+APP_VERSION = '0.2.10'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask MarkupSafe requests[socks]"
 import os
@@ -16,7 +16,7 @@ import threading
 import shutil
 import sqlite3
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
-from markupsafe import escape
+import html
 import re
 import hashlib
 import logging
@@ -256,6 +256,10 @@ def get_combined_feed():
     return posts
 
 # --- Helper Functions ---
+
+def escape(s):
+    """ Replacement for the escape function in the MarkupSafe module. html is built-in """
+    return html.escape(s, quote=True)
 
 def is_valid_onion_address(addr):
     return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
