@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.8'
+APP_VERSION = '0.2.9'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
-
+REQUIREMENTS_INSTALL_STRING = "pip install stem Flask MarkupSafe requests[socks]"
 import os
 import json
 import time
@@ -40,11 +40,11 @@ except ImportError:
 try:
     from stem.control import Controller
     from stem import Signal, ProtocolError
-    STEM_AVAILABLE = True
 except ImportError:
-    STEM_AVAILABLE = False
-    logger.warning("'stem' library not found. Tor integration will be disabled.")
-    logger.warning("Check tor is installed and then install Python requirements with:\npip install stem Flask MarkupSafe requests[socks]\n")
+    logger.error("--- 'stem' library not found. ---")
+    logger.error("Check tor is installed and then install Python requirements with:\n{REQUIREMENTS_INSTALL_STRING}\n")
+    logger.error("Exiting...")
+    exit()
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -52,7 +52,6 @@ app.secret_key = os.urandom(24)
 # --- Constants and Configuration ---
 DB_FILE = 'blitter.db'
 KEYS_DIR = 'keys'
-LOG_DIR = 'log'
 SECRET_WORD_FILE = 'secret_word'
 ONION_PORT = 80
 FLASK_HOST = "127.0.0.1"
@@ -419,7 +418,7 @@ def normalize_onion_address(onion_input):
         onion_input += '.onion'
     return onion_input, dir_name
 
-# --- Tor Integration Functions (unchanged) ---
+# --- Tor Integration Functions ---
 
 def find_first_onion_service_dir(keys_dir):
     if not os.path.isdir(keys_dir):
@@ -466,9 +465,6 @@ def get_key_blob(service_dir):
         return None
 
 def start_tor_hidden_service(key_blob_with_type):
-    if not STEM_AVAILABLE:
-        logger.error("Cannot start Tor service, 'stem' library is missing.")
-        return False
     global tor_controller, tor_service_id, onion_address, SITE_NAME
     try:
         logger.info("Connecting to Tor controller...")
@@ -1560,36 +1556,28 @@ def initialize_app():
     global SITE_NAME, onion_address
     logger.info("Initializing Blitter Node v%s (Protocol: %s)...", APP_VERSION, PROTOCOL_VERSION)
     os.makedirs(KEYS_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     static_dir = os.path.join(script_dir, 'static')
     os.makedirs(static_dir, exist_ok=True)
     logo_path = os.path.join(static_dir, 'logo_128.png')
     if not os.path.exists(logo_path):
          logger.warning("Logo file not found at %s. Ensure 'static/logo_128.png' exists.", logo_path)
-    logger.info("Directories checked/created: %s, %s, static", KEYS_DIR, LOG_DIR)
+    logger.info("Directories checked/created: %s, static", KEYS_DIR)
+
+    # Check secret word file exists
+    secret_file_path = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
+    if not os.path.exists(secret_file_path):
+        with open(secret_file_path, 'w', encoding='utf-8') as f:
+            json.dump({'secret_word': 'changeme'}, f, indent=2)
+            logger.info(f"{secret_file_path} created with default secret word.")
+        logger.warning("*"*72)
+        logger.warning("* WARNING: default secret word of 'changeme' has been set.             *")
+        logger.warning("* Change default secret word soon in order to change your passphrase.  *")
+        logger.warning("*"*72)
+
     # Initialize the SQLite database
     init_db()
-    # Ensure a local profile exists in the database.
-    local_profile = get_local_profile()
-    if not local_profile:
-         default_profile = {
-              "nickname": "User",
-              "location": "",
-              "description": "My Blitter profile.",
-              "email": "",
-              "website": ""
-         }
-         update_local_profile(default_profile)
-         logger.info("Default local profile inserted into DB.")
-    else:
-         logger.info("Local profile loaded from DB.")
-    if not STEM_AVAILABLE:
-        logger.info("--- Tor Integration Disabled ---")
-        logger.info("Skipping Tor setup because 'stem' library is not installed.")
-        SITE_NAME = "tor_disabled"
-        onion_address = None
-        return
+
     logger.info("--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
@@ -1598,6 +1586,21 @@ def initialize_app():
             logger.info("Using key from: %s", onion_dir)
             if start_tor_hidden_service(key_blob):
                 logger.info("--- Tor Onion Service setup successful. Site Name: %s ---", SITE_NAME)
+
+                # Ensure a matching local profile exists in the database.
+                local_profile = get_local_profile()
+                if not local_profile:
+                     default_profile = {
+                          "nickname": SITE_NAME[:4],
+                          "location": "",
+                          "description": f"Blitter profile for {SITE_NAME[:8]}...{SITE_NAME[-8:]}.onion",
+                          "email": "",
+                          "website": ""
+                     }
+                     update_local_profile(default_profile)
+                     logger.info("Default local profile inserted into DB.")
+                else:
+                     logger.info("Local profile loaded from DB.")
             else:
                 logger.error("--- Tor Onion Service setup failed. ---")
                 SITE_NAME = "tor_failed"
@@ -1607,19 +1610,32 @@ def initialize_app():
             SITE_NAME = "tor_key_error"
             onion_address = None
     else:
-        logger.error("No suitable Tor key directory found. Onion service not started.")
-        SITE_NAME = "tor_no_key"
-        onion_address = None
+        logger.error("No suitable Tor key directory found. Onion service can not be started.")
+        logger.warning("No keys have been created; No Blitter name (onion address) can be unlocked.")
+        logger.info("Create a random key with: \n")
+        logger.info("python keygen.py\n")
+        logger.info("You could also choose the first few characters (the 'prefix') e.g.\n")
+        logger.info("python keygen.py --prefix noob\n")
+        logger.info("Creating keys can take a few seconds, minutes, days or even longer.")
+        logger.info("Keep the prefix short to speed up the generation. On older hardware, keep it very short.")
+        logger.info(f"Note that the files created in the new onion directory unlock your Blitter identity.")
+        logger.info("Keep them safe and secure!")
+        logger.warning("Create a valid key and try again.\n")
+        logger.error("Exiting...")
+        exit()
+
     if SITE_NAME.startswith("tor_"):
-         logger.warning("\n*****************************************************")
-         logger.warning("WARNING: Tor setup did not complete successfully (Status: %s).", SITE_NAME)
-         logger.warning("The application will run, but might not be accessible via Tor")
-         logger.warning("and the site name used for posts may be incorrect.")
-         logger.warning("Ensure Tor service is running, configured with ControlPort 9051")
-         logger.warning("and a valid v3 key exists in the 'keys' directory.")
-         logger.warning("Check Tor logs (usually /var/log/tor/log or similar) for details.")
-         logger.warning("*****************************************************\n")
-    if onion_dir and not SITE_NAME.startswith("tor_"):
+        logger.error("*"*72)
+        logger.error("* ERROR: Tor setup did not complete successfully (Status: %s).", SITE_NAME)
+        logger.error("* Ensure Tor service is running, configured with ControlPort 9051")
+        logger.error("* and a valid v3 key exists in the 'keys' directory.")
+        logger.error("* Check Tor logs (usually /var/log/tor/log or similar) for details.")
+        logger.error("* Check Python requirements with: \n{REQUIREMENTS_INSTALL_STRING} *")
+        logger.error(f'{"*"*72}\n')
+        logger.error("Exiting...")
+        exit()  
+
+    if onion_dir:
         try:
             secret_word = None
             secret_word_data = None
