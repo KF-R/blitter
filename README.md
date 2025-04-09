@@ -176,9 +176,11 @@ Add other Blitter `.onion` sites as subscriptions:
 
 ## 🚧 Roadmap Ideas
 
-- 🧾 Signed message support (deterministic Ed25519).
-- 🪪 Profile verification or avatar support.
-- 📈 Graph-based social visualiser.
+- Signed message support (deterministic Ed25519)
+- Custom backgrounds or avatar support
+- Graph-based network visualiser
+- Secure direct messages
+- Crypto co-signatures
 
 ---
 
