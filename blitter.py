@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.12'
+APP_VERSION = '0.3.0'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -623,6 +623,37 @@ CSS_BASE = """
     </style>
 """
 
+JS_FORM = """
+    <script>
+    const textarea = document.getElementById('content');
+    if (textarea) {
+        textarea.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === '|') e.preventDefault();
+        });
+
+        textarea.addEventListener('input', () => {
+            textarea.value = textarea.value.replace(/[\\r\\n|]+/g, ' ');
+        });
+
+        document.addEventListener("DOMContentLoaded", function () {
+            const counter = document.getElementById("byte-count");
+            const maxBytes = {{ MAX_MSG_LENGTH }};
+            if (counter) {
+                const updateCounter = () => {
+                    const text = textarea.value;
+                    const byteLength = new TextEncoder().encode(text).length;
+                    counter.textContent = `${byteLength} / ${maxBytes} bytes`;
+                    counter.style.color = (byteLength > maxBytes) ? "red" : "#aaa";
+                };
+                textarea.addEventListener("input", updateCounter);
+                updateCounter();
+            }
+        });
+    }
+    </script>
+
+"""
+
 LOGIN_TEMPLATE = """
 <!doctype html>
 <html>
@@ -867,31 +898,12 @@ INDEX_TEMPLATE = """
           bindRemoveLinks();
       });
 
-      const textarea = document.getElementById('content');
-      if (textarea) {
-          textarea.addEventListener('keydown', e => {
-              if (e.key === 'Enter') e.preventDefault();
-          });
-          textarea.addEventListener('input', () => {
-              textarea.value = textarea.value.replace(/[\\r\\n]+/g, ' ');
-          });
-
-          document.addEventListener("DOMContentLoaded", function () {
-              const counter = document.getElementById("byte-count");
-              const maxBytes = {{ MAX_MSG_LENGTH }};
-              if (counter) {
-                  const updateCounter = () => {
-                      const text = textarea.value;
-                      const byteLength = new TextEncoder().encode(text).length;
-                      counter.textContent = `${byteLength} / ${maxBytes} bytes`;
-                      counter.style.color = (byteLength > maxBytes) ? "red" : "#aaa";
-                  };
-                  textarea.addEventListener("input", updateCounter);
-                  updateCounter();
-              }
-          });
-      }
     </script>
+
+{% if logged_in %}
+{{ js_form|safe }}
+{% endif %}
+
 </body>
 </html>
 """
@@ -1016,66 +1028,68 @@ VIEW_THREAD_TEMPLATE = """
         </div>
     </div>
     <hr/>
-    <div class="thread-view">
-        {% if parent_post is string %}
-            {{ parent_post|safe }}
-        {% elif parent_post %}
-            <div class="post-box {% if parent_post.site == site_name %}own-post-highlight{% endif %}">
-                <div class="post-meta">
-                    {% if parent_post.site == site_name %}
-                        <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
-                    {% else %}
-                        {% if parent_post.nickname %}
-                            <span class="nickname">{{ parent_post.nickname }}: </span>
+    <div class="content">
+        <div class="thread-view">
+            {% if parent_post is string %}
+                {{ parent_post|safe }}
+            {% elif parent_post %}
+                <div class="post-box {% if parent_post.site == site_name %}own-post-highlight{% endif %}">
+                    <div class="post-meta">
+                        {% if parent_post.site == site_name %}
+                            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                        {% else %}
+                            {% if parent_post.nickname %}
+                                <span class="nickname">{{ parent_post.nickname }}: </span>
+                            {% endif %}
                         {% endif %}
-                    {% endif %}
-                    <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
-                    {{ parent_post.display_timestamp }}
-                    | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
-                    | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}"{% if parent_post.site != site_name %} target="_blank"{% endif %} title="View">Thread</a>
-                    {% if parent_post.reply_id != null_reply_address %}
-                        <ul><li>
-                            <em>In reply to:</em>
-                            <a href="http://{{ parent_post.reply_id.split(':')[0] }}.onion/thread/{{ parent_post.reply_id }}">{{ parent_post.reply_id }}</a>
-                        </li></ul>
-                    {% endif %}
+                        <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
+                        {{ parent_post.display_timestamp }}
+                        | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
+                        | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}"{% if parent_post.site != site_name %} target="_blank"{% endif %} title="View">Thread</a>
+                        {% if parent_post.reply_id != null_reply_address %}
+                            <ul><li>
+                                <em>In reply to:</em>
+                                <a href="http://{{ parent_post.reply_id.split(':')[0] }}.onion/thread/{{ parent_post.reply_id }}">{{ parent_post.reply_id }}</a>
+                            </li></ul>
+                        {% endif %}
+                    </div>
+                    <div class="post-content">{{ bmd2html(parent_post.display_content) | safe }}</div>
                 </div>
-                <div class="post-content">{{ bmd2html(parent_post.display_content) | safe }}</div>
-            </div>
-        {% endif %}
-        <hr/>
-        <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}"{% if selected_post.reply_id != null_reply_address %} style="margin-left:50px;"{% endif %}>
-            <div class="post-meta">
-                {% if selected_post.site == site_name %}
-                    <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
-                    <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
-                    {{ selected_post.display_timestamp }}
-                    | <a href="{{ url_for('view_message', timestamp=selected_post.timestamp) }}" title="View raw message format">Raw</a>
-                {% else %}
-                    {% if selected_post.nickname %}
-                        <span class="nickname">{{ selected_post.nickname }}: </span>
+            {% endif %}
+            <hr/>
+            <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}"{% if selected_post.reply_id != null_reply_address %} style="margin-left:50px;"{% endif %}>
+                <div class="post-meta">
+                    {% if selected_post.site == site_name %}
+                        <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                        <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
+                        {{ selected_post.display_timestamp }}
+                        | <a href="{{ url_for('view_message', timestamp=selected_post.timestamp) }}" title="View raw message format">Raw</a>
+                    {% else %}
+                        {% if selected_post.nickname %}
+                            <span class="nickname">{{ selected_post.nickname }}: </span>
+                        {% endif %}
+                        <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
+                        {{ selected_post.display_timestamp }}
+                        | <a href="http://{{ selected_post.site }}.onion/{{ selected_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
                     {% endif %}
-                    <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
-                    {{ selected_post.display_timestamp }}
-                    | <a href="http://{{ selected_post.site }}.onion/{{ selected_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
-                {% endif %}
-                | <a href="{{ url_for('view_thread', message_id=selected_post.site + ':' + selected_post.timestamp) }}" title="View thread">Thread</a>
+                    | <a href="{{ url_for('view_thread', message_id=selected_post.site + ':' + selected_post.timestamp) }}" title="View thread">Thread</a>
+                </div>
+                <div class="post-content">{{ bmd2html(selected_post.display_content) | safe }}</div>
             </div>
-            <div class="post-content">{{ bmd2html(selected_post.display_content) | safe }}</div>
+            <hr/>
+            {{ thread_section|safe }}
+            <hr/>
+            {% if logged_in %}
+            <form method="post" action="{{ url_for('post') }}">
+                <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
+                <input type="text" name="reply_id" value="{{ selected_post.site }}:{{ selected_post.timestamp }}" readonly title="You are replying to the selected bleet." size="73">
+                <input type="submit" value="Post" style="margin: 5px;">
+                <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
+                <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
+            </form>
+            <hr/>
+            {% endif %}
         </div>
-        <hr/>
-        {{ thread_section|safe }}
-        <hr/>
-        {% if logged_in %}
-        <form method="post" action="{{ url_for('post') }}">
-            <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
-            <input type="text" name="reply_id" value="{{ selected_post.site }}:{{ selected_post.timestamp }}" readonly title="You are replying to the selected bleet." size="73">
-            <input type="submit" value="Post" style="margin: 5px;">
-            <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
-            <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
-        </form>
-        <hr/>
-        {% endif %}
     </div>
     <div class="footer">
         {{ footer_section|safe }}
@@ -1093,6 +1107,10 @@ VIEW_THREAD_TEMPLATE = """
         }
     }
     </script>
+{% if logged_in %}
+{{ js_form|safe }}
+{% endif %}
+
 </body>
 </html>
 """
@@ -1106,6 +1124,7 @@ def index():
     return render_template_string(
         INDEX_TEMPLATE,
         css_base=CSS_BASE,
+        js_form=render_template_string(JS_FORM, MAX_MSG_LENGTH=MAX_MSG_LENGTH),
         header_section=common['header_section'],
         footer_section=common['footer_section'],
         user_feed=local_feed,
@@ -1215,7 +1234,8 @@ def post():
     if not is_logged_in():
         logger.error("Unauthorized attempt to post.")
         abort(403)
-    content = request.form.get('content')
+    # Note: bars ("|") are reserved, hence stripped from all posts
+    content = request.form.get('content').replace("|","")
     if not content or not content.strip():
          logger.info("Post rejected: Empty content.")
          return redirect(url_for('index'))
@@ -1330,6 +1350,7 @@ def view_thread(message_id):
     view_thread_html = render_template_string(
         VIEW_THREAD_TEMPLATE,
         css_base=CSS_BASE,
+        js_form=render_template_string(JS_FORM, MAX_MSG_LENGTH=MAX_MSG_LENGTH),
         header_section=common['header_section'],
         utc_now=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
         logged_in=common['logged_in'],
@@ -1464,11 +1485,11 @@ def fetch_and_process_feed(site):
         if mismatched_site_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more mismatched site lines from %s.", mismatched_site_lines - 5, site_onion)
         if duplicate_timestamps > 0:
-             logger.info("[Fetcher] Skipped %d duplicate messages for %s.", duplicate_timestamps, site_onion)
+             logger.info("[Fetcher] Skipped %d dupes: %s.", duplicate_timestamps, site_onion)
         if new_messages_added > 0:
              logger.info("[Fetcher] Added %d new messages for %s.", new_messages_added, site_onion)
         else:
-             logger.info("[Fetcher] No new messages found for %s.", site_onion)
+             logger.info("[Fetcher] No new bleets for: %s.", site_onion)
     except Exception as e:
          logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
          return 0
