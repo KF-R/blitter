@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.0'
+APP_VERSION = '0.3.1'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -15,7 +15,7 @@ import concurrent.futures
 import threading
 import shutil
 import sqlite3
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort, send_from_directory
 import html
 import re
 import hashlib
@@ -578,6 +578,7 @@ def cleanup_tor_service():
 # --- Template Strings ---
 
 CSS_BASE = """
+    <link rel="icon" type="image/x-icon" href="/favicon.ico?v=blitter-01">
     <style>
         body { font-family: sans-serif; margin: 0; background-color: #222; color: #eee; }
         .header, .footer { background-color: #333; padding: 10px; overflow: hidden; }
@@ -1116,6 +1117,10 @@ VIEW_THREAD_TEMPLATE = """
 """
 
 # --- Flask Routes ---
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory('static', 'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/')
 def index():
