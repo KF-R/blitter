@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.1'
+APP_VERSION = '0.3.2'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -621,7 +621,14 @@ CSS_BASE = """
         .form-group { margin-bottom: 15px; }
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #ccc; }
         .form-links { text-align: center; margin-top: 10px; font-size: 0.9em; }
+        .remove-link { margin-left: 5px; color: #f88; font-size: 0.8em; cursor: pointer; }
+        .yodel-link { margin-left: 5px; color: #ffcc00; font-size: 0.8em; cursor: pointer; }
+        .site-info { margin-left: 10px; font-size: 0.9em; }
+        .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
+        .subscription-site-name { font-weight: bold; color: #aaa; }
+
     </style>
+
 """
 
 JS_FORM = """
@@ -958,7 +965,8 @@ SUBSCRIPTIONS_TEMPLATE = """
            {% endif %}
            <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
            {% if logged_in %}
-               <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[Remove]</a>
+               <a href="/yodel/{{ sub.site }}" class="yodel-link" title="Send a secure message to {{ sub.nickname or sub.site }}">[ Yodel ]</a>
+               <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[ Remove ]</a>
            {% endif %}
         </li>
     {% else %}
