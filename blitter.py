@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.2.11'
+APP_VERSION = '0.2.12'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -504,7 +504,7 @@ def start_tor_hidden_service(key_blob_with_type):
         if not parsed_service_id or not parsed_onion_address:
             raw_response_content = response.content(decode=False)
             raise ValueError(f"ADD_ONION command seemed to succeed, but failed to parse valid ServiceID/OnionAddress from response. Raw content: {raw_response_content}")
-        logger.info("Successfully created/attached service: %s", parsed_onion_address)
+        logger.info("Onion service attached: %s", parsed_onion_address)
         logger.info("Service points to http://%s:%s", FLASK_HOST, FLASK_PORT)
         tor_controller = controller
         tor_service_id = parsed_service_id
@@ -577,47 +577,7 @@ def cleanup_tor_service():
 
 # --- Template Strings ---
 
-LOGIN_TEMPLATE = """
-<!doctype html>
-<html>
-<head><title>Login</title></head>
-<body>
-  <h2>Login</h2>
-  {% if error %}<p style="color:red;"><strong>Error:</strong> {{ error }}</p>{% endif %}
-  <form method="post">
-    Passphrase: <input type="password" name="passphrase" value=""><br>
-    <input type="submit" value="Login">
-  </form>
-  <p><a href="{{ url_for('index') }}">Back to Feed</a></p>
-</body>
-</html>
-"""
-
-PROFILE_TEMPLATE = """
-<!doctype html>
-<html>
-<head><title>Profile</title></head>
-<body>
-  <h2>Profile</h2>
-  <a href="{{ url_for('logout') }}">Logout</a> | <a href="{{ url_for('index') }}">Home</a>
-  <form method="post">
-    Nickname: <input type="text" name="nickname" value="{{ profile.get('nickname', '') }}"><br>
-    Location: <input type="text" name="location" value="{{ profile.get('location', '') }}"><br>
-    Description:<br>
-    <textarea name="description" rows="4" cols="50">{{ profile.get('description', '') }}</textarea><br>
-    Email: <input type="text" name="email" value="{{ profile.get('email', '') }}"><br>
-    Website: <input type="text" name="website" value="{{ profile.get('website', '') }}"><br>
-    <input type="submit" value="Update Profile">
-  </form>
-</body>
-</html>
-"""
-
-INDEX_TEMPLATE = """
-<!doctype html>
-<html>
-<head>
-    <title>Blitter Feed - {{ site_name }}</title>
+CSS_BASE = """
     <style>
         body { font-family: sans-serif; margin: 0; background-color: #222; color: #eee; }
         .header, .footer { background-color: #333; padding: 10px; overflow: hidden; }
@@ -633,19 +593,115 @@ INDEX_TEMPLATE = """
         .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
         .post-meta a { color: #aaa; }
         .post-content { margin-top: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
-         textarea { width: 95%; background-color: #444; color: #eee; border: 1px solid #555; padding: 5px; font-family: inherit;}
-         input[type=submit], button { padding: 5px 10px; background-color: #555; border: none; color: #eee; cursor: pointer; border-radius: 3px; margin-left: 5px; }
-         button:disabled { background-color: #444; color: #888; cursor: not-allowed;}
-         a { color: #7af; text-decoration: none; }
-         a:hover { text-decoration: underline; }
-         .error { color: red; font-weight: bold; }
-         .site-info { margin-left: 10px; font-size: 0.9em; }
-         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
-         .location { color: #ccc; }
-         .subscription-site-name { font-weight: bold; color: #aaa; }
-         .remove-link { margin-left: 5px; color: #f88; font-size: 0.9em; cursor: pointer; }
-         #status-message { margin-top: 10px; padding: 5px; background-color: #444; border-radius: 3px; display: none; font-size: 0.9em; }
+        textarea, input[type=text] {
+            width: 100%; background-color: #444; color: #eee;
+            border: 1px solid #555; padding: 6px; font-family: inherit;
+            border-radius: 3px; box-sizing: border-box;
+        }
+        input[type=submit], button {
+            padding: 6px 12px; background-color: #555;
+            border: none; color: #eee; cursor: pointer;
+            border-radius: 3px; margin-top: 10px;
+        }
+        input[type=text],
+        input[type=password] {
+            width: 100%; background-color: #444; color: #eee;
+            border: 1px solid #555; padding: 6px; font-family: inherit;
+            border-radius: 3px; box-sizing: border-box;
+        }
+        button:disabled { background-color: #444; color: #888; cursor: not-allowed;}
+        a { color: #7af; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .form-container {
+            max-width: 500px; margin: 20px auto;
+            background-color: #2a2a2a; padding: 20px;
+            border-radius: 5px; border: 1px solid #444;
+        }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #ccc; }
+        .form-links { text-align: center; margin-top: 10px; font-size: 0.9em; }
     </style>
+"""
+
+LOGIN_TEMPLATE = """
+<!doctype html>
+<html>
+<head><title>Login</title>
+{{ css_base|safe }}
+</head>
+<body>
+    <div class="header">
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
+            Blitter
+        </span>
+        <div class="site-name">
+            <span id="site-name">{{ site_name }}</span>
+        </div>
+    </div>
+    <div>
+    <div class="form-container">
+        <h2>Login</h2>
+        {% if error %}<p style="color:red;"><strong>Error:</strong> {{ error }}</p>{% endif %}
+        <form method="post">
+        <div class="form-group">
+            <label for="passphrase">Passphrase:</label>
+            <input type="password" name="passphrase" value=""><br>
+            <input type="submit" value="Login">
+        </div>
+        </form>
+        <p><a href="{{ url_for('index') }}">Back to Feed</a></p>
+    </div>
+</body>
+</html>
+"""
+
+PROFILE_TEMPLATE = """
+<!doctype html>
+<html>
+<head><title>Profile</title>
+{{ css_base|safe }}
+</head>
+<body>
+    <div class="form-container">
+        <h2>Profile</h2>
+    <div class="form-links">
+        <a href="/logout">Logout</a> | <a href="/">Home</a>
+    </div>
+    <form method="post">
+        <div class="form-group">
+        <label for="nickname">Nickname</label>
+        <input type="text" name="nickname" id="nickname" value="sysop">
+        </div>
+        <div class="form-group">
+        <label for="location">Location</label>
+        <input type="text" name="location" id="location" value="Ottawa">
+        </div>
+        <div class="form-group">
+        <label for="description">Description</label>
+        <textarea name="description" id="description" rows="4">This is the first Blitter profile</textarea>
+        </div>
+        <div class="form-group">
+        <label for="email">Email</label>
+        <input type="text" name="email" id="email" value="">
+        </div>
+        <div class="form-group">
+        <label for="website">Website</label>
+        <input type="text" name="website" id="website" value="">
+        </div>
+        <input type="submit" value="Update Profile">
+    </form>
+    </div>
+</body>
+</html>
+"""
+
+INDEX_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+    <title>Blitter Feed - {{ site_name }}</title>
+{{ css_base|safe }}
 </head>
 <body>
     <div class="header">
@@ -932,41 +988,34 @@ VIEW_THREAD_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
-    <title>Blitter Feed - {{ site_name }}</title>
-    <style>
-        body { font-family: sans-serif; margin: 0; background-color: #222; color: #eee; }
-        .header, .footer { background-color: #333; padding: 10px; overflow: hidden; }
-        .header .logo { float: left; font-weight: bold; display: flex; align-items: center; }
-        .header .site-name { text-align: center; font-size: 1.1em; margin: 0 180px; line-height: 1.5em; }
-        .header .controls { float: right; }
-        .content { display: flex; flex-wrap: wrap; padding: 10px; }
-        .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
-        .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
-        .subscriptions-header { font-size:24px; font-weight: bold; margin-bottom: 8px; }
-        .post-box { border: 1px solid #444; padding: 10px; margin-bottom: 4px; background-color: #2a2a2a; border-radius: 5px;}
-        .post-box.own-post-highlight { border: 1px solid #ffcc00; }
-        .post-meta { font-size: 0.8em; color: #888; margin-bottom: 5px;}
-        .post-meta a { color: #aaa; }
-        .post-content { margin-top: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
-         textarea { width: 95%; background-color: #444; color: #eee; border: 1px solid #555; padding: 5px; font-family: inherit;}
-         input[type=submit], button { padding: 5px 10px; background-color: #555; border: none; color: #eee; cursor: pointer; border-radius: 3px; margin-left: 5px; }
-         button:disabled { background-color: #444; color: #888; cursor: not-allowed;}
-         a { color: #7af; text-decoration: none; }
-         a:hover { text-decoration: underline; }
-         .error { color: red; font-weight: bold; }
-         .site-info { margin-left: 10px; font-size: 0.9em; }
-         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
-         .location { color: #ccc; }
-         .subscription-site-name { font-weight: bold; color: #aaa; }
-         .remove-link { margin-left: 5px; color: #f88; font-size: 0.9em; cursor: pointer; }
-         #status-message { margin-top: 10px; padding: 5px; background-color: #444; border-radius: 3px; display: none; font-size: 0.9em; }
-         .children { margin-top: 10px; }
-    </style>
+    <title>Blitter Thread - {{ site_name }}</title>
+{{ css_base|safe}}
 </head>
 <body>
     <div class="header">
-        {{ header_section|safe }}
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
+            Blitter
+        </span>
+        <span class="controls">
+            {% if logged_in %}
+                <a href="{{ url_for('profile') }}">Profile</a> |
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% else %}
+                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
+            {% endif %}
+        </span>
+        <div class="site-name">
+            {% if onion_address %}
+                    {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
+            {% else %}
+                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
+            {% endif %}
+            <span id="site-name">{{ onion_address or site_name }}</span>
+            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
+        </div>
     </div>
+    <hr/>
     <div class="thread-view">
         {% if parent_post is string %}
             {{ parent_post|safe }}
@@ -1056,6 +1105,7 @@ def index():
     local_feed = get_local_feed()
     return render_template_string(
         INDEX_TEMPLATE,
+        css_base=CSS_BASE,
         header_section=common['header_section'],
         footer_section=common['footer_section'],
         user_feed=local_feed,
@@ -1111,7 +1161,7 @@ def login():
             logger.error("Login failed: Invalid Credentials.")
             error = 'Invalid Credentials. Please try again.'
             time.sleep(1)
-    return render_template_string(LOGIN_TEMPLATE, error=error)
+    return render_template_string(LOGIN_TEMPLATE, css_base=CSS_BASE, site_name=SITE_NAME, error=error)
 
 @app.route('/logout')
 def logout():
@@ -1158,7 +1208,7 @@ def profile():
     local_profile.setdefault('description', '')
     local_profile.setdefault('email', '')
     local_profile.setdefault('website', '')
-    return render_template_string(PROFILE_TEMPLATE, profile=local_profile)
+    return render_template_string(PROFILE_TEMPLATE, profile=local_profile, css_base=CSS_BASE)
 
 @app.route('/post', methods=['POST'])
 def post():
@@ -1279,6 +1329,7 @@ def view_thread(message_id):
     common = get_common_context()
     view_thread_html = render_template_string(
         VIEW_THREAD_TEMPLATE,
+        css_base=CSS_BASE,
         header_section=common['header_section'],
         utc_now=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
         logged_in=common['logged_in'],
@@ -1287,6 +1338,7 @@ def view_thread(message_id):
         thread_section=thread_section,
         footer_section=common['footer_section'],
         site_name=SITE_NAME,
+        onion_address=onion_address,
         profile=common['profile'],
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html,
