@@ -1,7 +1,4 @@
-
-![logo_128](https://github.com/user-attachments/assets/be252f14-5e89-4dff-bb6b-6825c5dc12d5)
-
-
+<img src="https://github.com/user-attachments/assets/be252f14-5e89-4dff-bb6b-6825c5dc12d5" width="128" height="128" align="left">
 
 ### Blitter: A decentralised anti-fragile message network
 
