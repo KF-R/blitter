@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.2'
+APP_VERSION = '0.3.3'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -101,6 +101,17 @@ def init_db():
             PRIMARY KEY (site, timestamp)
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS blats (
+            recipient TEXT,
+            sender TEXT,
+            timestamp TEXT,
+            subject TEXT,
+            content TEXT,
+            flags TEXT,
+            PRIMARY KEY (sender, timestamp)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -169,8 +180,25 @@ def upsert_subscription_profile(site, info):
     conn.commit()
     conn.close()
 
-def insert_post_from_message(msg_str):
-    parts = parse_message_string(msg_str)
+def insert_blat(recipient, sender, timestamp, subject, content, flags):
+    # TODO: Validate fields
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT OR IGNORE INTO blats (recipient, sender, timestamp, subject, content, flags)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (recipient, sender, timestamp, subject, content, flags))
+        conn.commit()
+    except Exception as e:
+        logger.error("DB insert error: %s", e)
+        return False
+    finally:
+        conn.close()
+    return True
+
+def insert_bleet(msg_str):
+    parts = parse_bleet_string(msg_str)
     if not parts:
         return False
     conn = get_db_connection()
@@ -332,7 +360,7 @@ def format_timestamp_for_display(hex_timestamp):
     except Exception:
         return "Invalid Timestamp"
 
-def parse_message_string(msg_str):
+def parse_bleet_string(msg_str):
     if not isinstance(msg_str, str) or not msg_str.startswith('|') or not msg_str.endswith('|'):
         return None
     parts = msg_str.strip('|').split('|')
@@ -351,7 +379,7 @@ def parse_message_string(msg_str):
         expected_len = int(length_field)
         actual_len = len(content.encode('utf-8', errors='ignore'))
         if actual_len != expected_len:
-            logger.warning("Message length field %d does not match UTF-8 byte length %d. Content: '%s...'", expected_len, actual_len, content[:50])
+            logger.warning("Bleet length field %d does not match UTF-8 byte length %d. Content: '%s...'", expected_len, actual_len, content[:50])
     except ValueError:
         return None
     return {
@@ -363,18 +391,15 @@ def parse_message_string(msg_str):
         'flags': flag_int,
         'len': length_field,
         'content': content,
-        'raw_message': msg_str
+        'raw_bleet': msg_str
     }
 
-def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
+def create_bleet_string(content, reply_id=NULL_REPLY_ADDRESS):
     global SITE_NAME, PROTOCOL_VERSION
-    if SITE_NAME.startswith("tor_"):
-         logger.error("Cannot create message, Tor setup incomplete/failed.")
-         return None, None
 
     timestamp = get_current_timestamp_hex()
     if not isinstance(content, str):
-         logger.error("Message content must be a string.")
+         logger.error("Bleet content must be a string.")
          return None, None
 
     content_bytes = content.encode('utf-8', errors='ignore')
@@ -384,7 +409,7 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
         truncated_bytes = content_bytes[:MAX_MSG_LENGTH]
         content = truncated_bytes.decode('utf-8', errors='ignore')
         content_length = len(content.encode('utf-8', errors='ignore'))
-        logger.warning("Message content truncated to %d bytes (max %d).", content_length, MAX_MSG_LENGTH)
+        logger.warning("Bleet content truncated to %d bytes (max %d).", content_length, MAX_MSG_LENGTH)
 
     expiration = 'f'*16
     flag_int = '0'*16
@@ -392,8 +417,8 @@ def create_message_string(content, reply_id=NULL_REPLY_ADDRESS):
     if not reply_id:
         reply_id = NULL_REPLY_ADDRESS
 
-    message = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
-    return message, timestamp
+    bleet = f"|{PROTOCOL_VERSION}|{SITE_NAME}|{timestamp}|{reply_id}|{expiration}|{flag_int}|{len_field}|{content}|"
+    return bleet, timestamp
 
 def bmd2html(bmd_string):
     if not isinstance(bmd_string, str):
@@ -622,7 +647,7 @@ CSS_BASE = """
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #ccc; }
         .form-links { text-align: center; margin-top: 10px; font-size: 0.9em; }
         .remove-link { margin-left: 5px; color: #f88; font-size: 0.8em; cursor: pointer; }
-        .yodel-link { margin-left: 5px; color: #ffcc00; font-size: 0.8em; cursor: pointer; }
+        .blat-link { margin-left: 5px; color: #ffcc00; font-size: 0.8em; cursor: pointer; }
         .site-info { margin-left: 10px; font-size: 0.9em; }
         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
         .subscription-site-name { font-weight: bold; color: #aaa; }
@@ -779,8 +804,8 @@ INDEX_TEMPLATE = """
             <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
                 <div class="post-meta">
                     Posted: {{ post.display_timestamp }}
-                     | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
-                     | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
+                     | <a href="{{ url_for('view_bleet', timestamp=post.timestamp) }}" title="View raw bleet format">Raw</a>
+                     | <a href="{{ url_for('view_thread', bleet_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
                 </div>
                 <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
             </div>
@@ -861,7 +886,7 @@ INDEX_TEMPLATE = """
                       event.preventDefault();
                       const siteDir = event.target.dataset.site;
                       const siteOnion = siteDir + ".onion";
-                      if (confirm(`Are you sure you want to remove the subscription for ${siteOnion}? This will delete the cached messages.`)) {
+                      if (confirm(`Are you sure you want to remove the subscription for ${siteOnion}? This will delete the cached bleets.`)) {
                           showStatus(`Removing subscription ${siteOnion}...`);
                           fetch(`/remove_subscription/${siteDir}`, {
                               method: 'POST',
@@ -928,16 +953,16 @@ SUBSCRIPTIONS_TEMPLATE = """
             <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
-            | <a href="{{ url_for('view_message', timestamp=post.timestamp) }}" title="View raw message format">Raw</a>
+            | <a href="{{ url_for('view_bleet', timestamp=post.timestamp) }}" title="View raw bleet">Raw</a>
         {% else %}
             {% if post.nickname %}
                 <span class="nickname">{{ post.nickname }}: </span>
             {% endif %}
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
-            | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
+            | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw bleet on originating site">Raw</a>
         {% endif %}
-        | <a href="{{ url_for('view_thread', message_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
+        | <a href="{{ url_for('view_thread', bleet_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
         {% if post.reply_id != null_reply_address %}
             <ul><li>
                 <em>In reply to:</em>
@@ -948,7 +973,7 @@ SUBSCRIPTIONS_TEMPLATE = """
     <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
 </div>
 {% else %}
-<p>No messages found in timeline.</p>
+<p>No bleets found in timeline.</p>
 {% if subscriptions %}
 <p>
   {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
@@ -965,7 +990,7 @@ SUBSCRIPTIONS_TEMPLATE = """
            {% endif %}
            <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
            {% if logged_in %}
-               <a href="/yodel/{{ sub.site }}" class="yodel-link" title="Send a secure message to {{ sub.nickname or sub.site }}">[ Yodel ]</a>
+               <a href="/blat/{{ sub.site }}" class="blat-link" title="Send an encrypted private direct message to {{ sub.nickname or sub.site }}">[ Blat ]</a>
                <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[ Remove ]</a>
            {% endif %}
         </li>
@@ -1053,7 +1078,7 @@ VIEW_THREAD_TEMPLATE = """
                         {% endif %}
                         <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
                         {{ parent_post.display_timestamp }}
-                        | <a href="{{ url_for('view_message', timestamp=parent_post.timestamp) }}" title="View raw message format">Raw</a>
+                        | <a href="{{ url_for('view_bleet', timestamp=parent_post.timestamp) }}" title="View raw bleet">Raw</a>
                         | <a href="http://{{ parent_post.site }}.onion/thread/{{ parent_post.site }}:{{ parent_post.timestamp }}"{% if parent_post.site != site_name %} target="_blank"{% endif %} title="View">Thread</a>
                         {% if parent_post.reply_id != null_reply_address %}
                             <ul><li>
@@ -1072,16 +1097,16 @@ VIEW_THREAD_TEMPLATE = """
                         <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
                         <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
                         {{ selected_post.display_timestamp }}
-                        | <a href="{{ url_for('view_message', timestamp=selected_post.timestamp) }}" title="View raw message format">Raw</a>
+                        | <a href="{{ url_for('view_bleet', timestamp=selected_post.timestamp) }}" title="View raw bleet">Raw</a>
                     {% else %}
                         {% if selected_post.nickname %}
                             <span class="nickname">{{ selected_post.nickname }}: </span>
                         {% endif %}
                         <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
                         {{ selected_post.display_timestamp }}
-                        | <a href="http://{{ selected_post.site }}.onion/{{ selected_post.timestamp }}" target="_blank" title="View raw message on originating site">Raw</a>
+                        | <a href="http://{{ selected_post.site }}.onion/{{ selected_post.timestamp }}" target="_blank" title="View raw bleet on originating site">Raw</a>
                     {% endif %}
-                    | <a href="{{ url_for('view_thread', message_id=selected_post.site + ':' + selected_post.timestamp) }}" title="View thread">Thread</a>
+                    | <a href="{{ url_for('view_thread', bleet_id=selected_post.site + ':' + selected_post.timestamp) }}" title="View thread">Thread</a>
                 </div>
                 <div class="post-content">{{ bmd2html(selected_post.display_content) | safe }}</div>
             </div>
@@ -1116,6 +1141,66 @@ VIEW_THREAD_TEMPLATE = """
         }
     }
     </script>
+{% if logged_in %}
+{{ js_form|safe }}
+{% endif %}
+
+</body>
+</html>
+"""
+
+BLAT_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+    <title>Blitter Blat Out- {{ site_name }}</title>
+{{ css_base|safe}}
+</head>
+<body>
+    <div class="header">
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
+            Blitter
+        </span>
+        <span class="controls">
+            {% if logged_in %}
+                <a href="{{ url_for('profile') }}">Profile</a> |
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% else %}
+                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
+            {% endif %}
+        </span>
+        <div class="site-name">
+            {% if onion_address %}
+                    {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
+            {% else %}
+                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
+            {% endif %}
+            <span id="site-name">{{ onion_address or site_name }}</span>
+        </div>
+    </div>
+    <hr/>
+    <div class="content">
+        <hr/>
+        {% if logged_in %}
+        <form method="post" action="{{ url_for('send_blat') }}">
+            <label for="blat_recipient">Blat @:</label>
+            <input type="text" name="blat_recipient" value="{{ blat_recipient }}" readonly title="You are sending an encrypted direct message to this blitter user." size="70">
+            <label for="subject">Blat Subject:</label>
+            <textarea id="subject" name="subject" rows="1" placeholder="Enter the subject of your private direct message here" maxlength="80" required></textarea><br>
+            <label for="content">Blat content:</label>
+            <textarea id="content" name="content" rows="3" placeholder="Enter your private direct message here" maxlength="{{ MAX_MSG_LENGTH }}" required></textarea><br>
+            <input type="submit" value="Post" style="margin: 5px;">
+            <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
+        </form>
+        <hr/>
+        {% else %}
+        <h2>Log in to blat people</h2>
+        {% endif %}
+    </div>
+    <div class="footer">
+        {{ footer_section|safe }}
+    </div>
 {% if logged_in %}
 {{ js_form|safe }}
 {% endif %}
@@ -1252,11 +1337,11 @@ def post():
     if not content or not content.strip():
          logger.info("Post rejected: Empty content.")
          return redirect(url_for('index'))
-    new_message_str, timestamp = create_message_string(content, request.form.get('reply_id'))
-    if not new_message_str:
-        logger.error("Failed to create message string (check logs). Post rejected.")
+    new_bleet_str, timestamp = create_bleet_string(content, request.form.get('reply_id'))
+    if not new_bleet_str:
+        logger.error("Failed to create bleet string (check logs). Post rejected.")
         return redirect(url_for('index'))
-    if insert_post_from_message(new_message_str):
+    if insert_bleet(new_bleet_str):
         logger.info("New post added with timestamp: %s", timestamp)
     else:
         logger.error("Error inserting post into database.")
@@ -1264,11 +1349,11 @@ def post():
 
 @app.route('/feed')
 def feed():
-    posts = get_local_feed()
+    bleets = get_local_feed()
     feed_lines = []
-    for post in posts:
-         message = f"|{post['protocol']}|{post['site']}|{post['timestamp']}|{post['reply_id']}|{post['expiration']}|{post['flags']}|{post['len']}|{post['content']}|"
-         feed_lines.append(message)
+    for bleet in bleets:
+         bleet = f"|{bleet['protocol']}|{bleet['site']}|{bleet['timestamp']}|{bleet['reply_id']}|{bleet['expiration']}|{bleet['flags']}|{bleet['len']}|{bleet['content']}|"
+         feed_lines.append(bleet)
     return "\n".join(feed_lines), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/subs')
@@ -1278,35 +1363,35 @@ def subs():
     return "\n".join(sorted(sites)), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 @app.route('/<string:timestamp>')
-def view_message(timestamp):
+def view_bleet(timestamp):
     if not (len(timestamp) == 16 and all(c in string.hexdigits for c in timestamp)):
         abort(404, description="Invalid timestamp format.")
     post = get_post(SITE_NAME, timestamp)
     if post:
-        message = f"|{post['protocol']}|{post['site']}|{post['timestamp']}|{post['reply_id']}|{post['expiration']}|{post['flags']}|{post['len']}|{post['content']}|"
+        bleet = f"|{post['protocol']}|{post['site']}|{post['timestamp']}|{post['reply_id']}|{post['expiration']}|{post['flags']}|{post['len']}|{post['content']}|"
         try:
-            ascii_msg = message.encode('ascii').decode('ascii')
+            ascii_msg = bleet.encode('ascii').decode('ascii')
             return ascii_msg, 200, {'Content-Type': 'text/plain; charset=ascii'}
         except UnicodeEncodeError:
-            return message, 200, {'Content-Type': 'text/plain; charset=utf-8'}
-    abort(404, description="Message not found.")
+            return bleet, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    abort(404, description="Bleet not found.")
 
-@app.route('/thread/<string:message_id>')
-def view_thread(message_id):
+@app.route('/thread/<string:bleet_id>')
+def view_thread(bleet_id):
     local_profile = get_local_profile()
-    if (':' not in message_id) or (len(message_id) != len(NULL_REPLY_ADDRESS)):
-        abort(400, description="Invalid message id format.")
-    message_site, message_timestamp = message_id.split(':')
-    if not is_valid_onion_address(message_site):
+    if (':' not in bleet_id) or (len(bleet_id) != len(NULL_REPLY_ADDRESS)):
+        abort(400, description="Invalid bleet id format.")
+    bleet_site, bleet_timestamp = bleet_id.split(':')
+    if not is_valid_onion_address(bleet_site):
         abort(400, description="Invalid blitter (onion) address.")
-    if not (len(message_timestamp) == 16 and all(c in string.hexdigits for c in message_timestamp)):
+    if not (len(bleet_timestamp) == 16 and all(c in string.hexdigits for c in bleet_timestamp)):
         abort(400, description="Invalid timestamp format.")
 
     combined_feed = get_combined_feed()
     selected_post = None
     parent_post = None
     for post in combined_feed:
-        if post['site'] == message_site and post['timestamp'] == message_timestamp:
+        if post['site'] == bleet_site and post['timestamp'] == bleet_timestamp:
             selected_post = post
             if post['reply_id'] != NULL_REPLY_ADDRESS:
                 for parent in combined_feed:
@@ -1314,13 +1399,13 @@ def view_thread(message_id):
                         parent_post = parent
                         break
                 if not parent_post:
-                    parent_post = f"Parent post is not cached locally: http://{message_site}.onion/thread/{post['reply_id']}"
+                    parent_post = f"Parent post is not cached locally: http://{bleet_site}.onion/thread/{post['reply_id']}"
             else:
                 parent_post = "This post is not a reply. It is an original bleet."
             break
 
     if not selected_post:
-        abort(404, description="Message not stored or cached on this Blitter site.")
+        abort(404, description="Bleet not stored or cached on this Blitter site.")
 
     def generate_children_html(parent, feed, level=1):
         parent_id = f"{parent['site']}_{parent['timestamp']}"
@@ -1344,11 +1429,11 @@ def view_thread(message_id):
                     html += f'<span class="nickname">{child["nickname"]}: </span>'
             html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
             html += f'{child["display_timestamp"]} '
-            html += f'| <a href="{url_for("view_message", timestamp=child["timestamp"])}" title="View raw message format">Raw</a> '
+            html += f'| <a href="{url_for("view_bleet", timestamp=child["timestamp"])}" title="View raw bleet">Raw</a> '
             if child["site"] != SITE_NAME:
                 html += f'| <a href="http://{child["site"]}.onion/thread/{child["site"]}:{child["timestamp"]}" target="_blank" title="View thread">Thread</a>'
             else:
-                html += f'| <a href="{url_for("view_thread", message_id=child["site"] + ":" + child["timestamp"])}" title="View thread">Thread</a>'
+                html += f'| <a href="{url_for("view_thread", bleet_id=child["site"] + ":" + child["timestamp"])}" title="View thread">Thread</a>'
             if child["reply_id"] != NULL_REPLY_ADDRESS:
                 html += f'<br><em>In reply to:</em> <a href="http://{child["reply_id"].split(":")[0]}.onion/thread/{child["reply_id"]}">{child["reply_id"]}</a>'
             html += '</div>'
@@ -1379,6 +1464,51 @@ def view_thread(message_id):
         null_reply_address=NULL_REPLY_ADDRESS
     )
     return view_thread_html
+
+@app.route('/blat/<string:blat_recipient>')
+def blat(blat_recipient):
+    # TODO Validate blat_recipient address
+    # TODO Process blat
+    common = get_common_context()
+    return render_template_string(
+        BLAT_TEMPLATE, 
+        css_base=CSS_BASE, js_form=render_template_string(JS_FORM, MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32),
+        logged_in=common['logged_in'],
+        profile=common['profile'],
+        onion_address=onion_address,
+        blat_recipient=blat_recipient,
+        site_name=SITE_NAME,
+        MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32) 
+
+@app.route('/send_blat', methods=['POST'])
+def send_blat():
+    if not is_logged_in():  
+        logger.error("Unauthorized attempt to blat.")
+        abort(403)
+
+    blat_recipient=request.form.get('blat_recipient')
+    subs = [sub['site'] for sub in get_all_subscriptions()]
+    if blat_recipient not in subs:
+        log.error("Blat recipient (%s) not in subscriptions list.", blat_recipient)
+        return redirect(url_for('index'))
+
+    timestamp = get_current_timestamp_hex()
+
+    subject = request.form.get('subject')
+    if not subject or not subject.strip():
+         logger.info("Blat rejected: Empty subject.")
+         return redirect(url_for('index'))
+
+    content = request.form.get('content')
+    if not content or not content.strip():
+         logger.info("Blat rejected: Empty content.")
+         return redirect(url_for('index'))
+
+    if insert_blat(blat_recipient, SITE_NAME, timestamp, subject, content, '0'*16):
+        logger.info("New blat added with timestamp: %s", timestamp)
+    else:
+        logger.error("Error inserting blat into database.")
+    return redirect(url_for('index'))
 
 @app.route('/add_subscription', methods=['POST'])
 def add_subscription():
@@ -1439,7 +1569,7 @@ def fetch_and_process_feed(site):
     site_onion = f"{site}.onion"
     feed_url = f"http://{site_onion}/feed"
     logger.info("[Fetcher] Starting fetch for: %s", site_onion)
-    new_messages_added = 0
+    new_bleets_added = 0
     try:
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
         fetched_content = None
@@ -1472,15 +1602,15 @@ def fetch_and_process_feed(site):
               msg_str = line.strip()
               if not msg_str:
                   continue
-              parsed_msg = parse_message_string(msg_str)
+              parsed_msg = parse_bleet_string(msg_str)
               if not parsed_msg:
                   if malformed_lines < 5:
-                      logger.warning("[Fetcher] Invalid message format received from %s: %s...", site_onion, msg_str)
+                      logger.warning("[Fetcher] Invalid bleet format received from %s: %s...", site_onion, msg_str)
                   malformed_lines += 1
                   continue
               if parsed_msg['site'] != site:
                   if mismatched_site_lines < 5:
-                      logger.warning("[Fetcher] SECURITY WARNING: Message received from %s claims to be from %s. DISCARDING: %s...", site_onion, parsed_msg['site'], msg_str[:100])
+                      logger.warning("[Fetcher] SECURITY WARNING: Bleet received from %s claims to be from %s. DISCARDING: %s...", site_onion, parsed_msg['site'], msg_str[:100])
                   mismatched_site_lines += 1
                   continue
               conn = get_db_connection()
@@ -1491,29 +1621,29 @@ def fetch_and_process_feed(site):
               if exists:
                   duplicate_timestamps += 1
                   continue
-              if insert_post_from_message(msg_str):
-                  new_messages_added += 1
+              if insert_bleet(msg_str):
+                  new_bleets_added += 1
         if malformed_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more malformed lines from %s.", malformed_lines - 5, site_onion)
         if mismatched_site_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more mismatched site lines from %s.", mismatched_site_lines - 5, site_onion)
         if duplicate_timestamps > 0:
              logger.info("[Fetcher] Skipped %d dupes: %s.", duplicate_timestamps, site_onion)
-        if new_messages_added > 0:
-             logger.info("[Fetcher] Added %d new messages for %s.", new_messages_added, site_onion)
+        if new_bleets_added > 0:
+             logger.info("[Fetcher] Added %d new bleets for %s.", new_bleets_added, site_onion)
         else:
              logger.info("[Fetcher] No new bleets for: %s.", site_onion)
     except Exception as e:
          logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
          return 0
-    return new_messages_added
+    return new_bleets_added
 
 def run_fetch_cycle():
     global fetch_lock, fetch_executor, fetch_timer, FETCH_CYCLE
-    logger.info("[%s] Attempting scheduled fetch cycle...", datetime.datetime.now().isoformat())
+    logger.info("Attempting scheduled fetch cycle...")
     if fetch_lock.acquire(blocking=False):
         logger.info("[Fetcher] Acquired lock for scheduled run.")
-        total_new_messages = 0
+        total_new_bleets = 0
         sites_fetched_count = 0
         try:
             start_time = time.time()
@@ -1530,7 +1660,7 @@ def run_fetch_cycle():
                      try:
                          new_count = future.result()
                          if new_count is not None:
-                              total_new_messages += new_count
+                              total_new_bleets += new_count
                          else:
                               logger.error("[Fetcher] Warning: Task for site %s returned None.", site)
                      except Exception as exc:
@@ -1544,7 +1674,7 @@ def run_fetch_cycle():
             logger.info("[Fetcher] Released lock for scheduled run.")
         end_time = time.time()
         duration = end_time - start_time
-        logger.info("[Fetcher] Fetch cycle completed in %.2f seconds. Fetched %d subscriptions, %d new messages.", duration, sites_fetched_count, total_new_messages)
+        logger.info("[Fetcher] Fetch cycle completed in %.2f seconds. Fetched %d subscriptions, %d new bleets.", duration, sites_fetched_count, total_new_bleets)
     else:
         logger.info("[Fetcher] Skipping scheduled run: Fetch lock already held.")
     app_is_exiting = getattr(sys, 'is_exiting', False)
