@@ -162,22 +162,25 @@ Example:
 
 ### 🧬 Data Model
 
-- SQLite DB with two tables:
+- SQLite DB with three tables:
   - `profiles`: nickname, description, email, etc.
   - `posts`: all bleets, indexed by site + timestamp
+  - `blats`: all blats, outbox, sent, received and read
 
 ### 📥 Subscriptions
 
 Add other **Blitter** `.onion` sites as subscriptions:
 - **Blitter** fetches `/about` and `/feed` over Tor.
-- Messages are verified, parsed, and stored locally.
+- **_Bleets_** are verified, parsed, and stored locally.
 - Feeds are merged in the UI, sorted by timestamp.
+- Send and receive direct secure private **_Blats_**
 
 ---
 
 ## 🧠 Features & Design Highlights
 
 - 🔑 Passphrase-based login derived from secret Tor key + BIP-39.
+- 🔐 Diffie-Hellman secure end-to-end encryption for private messages.
 - 🔁 Fully offline-capable (local-only viewing possible).
 - 🔂 Threaded replies.
 - 🔍 View raw message format for transparency.
