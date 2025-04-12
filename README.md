@@ -108,7 +108,6 @@ python keygen.py
 
 ---
 
-
 ## Launching **Blitter**:
 
 ```bash
@@ -192,11 +191,12 @@ Add other **Blitter** `.onion` sites as subscriptions:
 
 ## 🚧 Roadmap Ideas
 
-- Signed message support (deterministic Ed25519)
-- Custom backgrounds or avatar support
+- Custom backgrounds and avatar support
+- UI improvements, themes, & customisation
+- Expand markdown
 - Graph-based network visualiser
-- Secure direct messages
 - Crypto co-signatures
+- File drop
 
 ---
 
