@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.6'
+APP_VERSION = '0.3.7'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
-REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
+REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
 import json
 import time
@@ -1172,8 +1172,8 @@ VIEW_BLATS_TEMPLATE = """
             <tbody>
                 {% for blat in rows %}
                 <tr>
-                    <td>{{ blat.recipient }}</td>
-                    <td>{{ blat.sender }}</td>
+                    <td>{{ (('<span class="nickname">' ~ blat.recipient_nick ~ ':</span> ') if blat.recipient_nick else '') | safe }}{{ blat.recipient }}</td>
+                    <td>{{ (('<span class="nickname">' ~ blat.sender_nick ~ ':</span> ') if blat.sender_nick else '') | safe }}{{ blat.sender }}</td>
                     <td>{{ blat.timestamp }}</td>
                     <td>{{ blat.subject }}</td>
                     <td>{{ blat.content }}</td>
@@ -1637,31 +1637,35 @@ def view_blats():
     if not is_logged_in():
         return redirect(url_for('login'))
 
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     rows = conn.execute('SELECT * FROM blats').fetchall()
     conn.close()
 
+    subs = get_all_subscriptions()
+    nickname_map = {sub['site']: sub['nickname'] for sub in subs}
+    local_profile = get_local_profile()
+    local_nickname = local_profile.get('nickname', 'You')
+
     parsed_rows = []
-    for row in rows:
+    for row in reversed(rows):
         row_dict = dict(row)  # make a mutable copy
 
         if row_dict['recipient'] == SITE_NAME:
-            row_dict['recipient'] = 'you'
-            if row_dict['flags'] == '0' * 16:
-                row_dict['flags'] = 'Unread'
-            else:
-                row_dict['flags'] = 'Read'
+            row_dict['recipient'] = local_nickname
+            row_dict['flags'] = 'Unread' if row_dict['flags'] == '0' * 16 else 'Read'
+        elif row_dict['recipient'] in nickname_map:
+            row_dict['recipient_nick'] = nickname_map[row_dict['recipient']]
 
         if row_dict['sender'] == SITE_NAME:
-            row_dict['sender'] = 'you'
-            if row_dict['flags'] == '0' * 16:
-                row_dict['flags'] = 'Undelivered'
-            else:
-                row_dict['flags'] = 'Delivered'
+            row_dict['sender'] = local_nickname
+            row_dict['flags'] = 'Undelivered' if row_dict['flags'] == '0' * 16 else 'Delivered'
+        elif row_dict['sender'] in nickname_map:
+            row_dict['sender_nick'] = nickname_map[row_dict['sender']]
 
         row_dict['timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
-            
+
         parsed_rows.append(row_dict)
 
     common = get_common_context()
