@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.5'
+APP_VERSION = '0.3.6'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -482,7 +482,7 @@ def get_blitsec(service_dir):
         with open(key_file_path, 'rb') as f:
             key_data = f.read()
         if len(key_data) != 96:
-             rifueError(f"Key file size is incorrect for old format ({len(key_data)} bytes found)")
+            raise ValueError(f"Key file size is incorrect. {len(key_data)} bytes found.")
         return key_data[32:64]
     except FileNotFoundError:
         logger.error("Secret key file not found: %s", key_file_path)
@@ -1706,7 +1706,7 @@ def deliver_blat(recipient, timestamp, subject, content, flags):
         'encrypted_message': encrypted_message,
         'flags': flags
     }
-    print(f"TX Payload:\n\n{payload}\n\n")
+  
     try:
         response = requests.post(
             f'http://{recipient}.onion/rx_blat',
@@ -2040,7 +2040,7 @@ def rx_blat():
         'encrypted_message': encrypted_message,
         'flags': flags
     }
-    print(f"RX Payload:\n\n{payload}\n\n")
+
     if not recipient or recipient != SITE_NAME:
         logger.warning("Failed delivery attempt: recipient unknown")
         abort(403)
