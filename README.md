@@ -202,6 +202,8 @@ Add other **Blitter** `.onion` sites as subscriptions:
 
 ## 🚧 Roadmap Ideas
 
+- Blitter tray: an optional universal inbox for guests
+- Optionally automatically sending a **_Bleet_** when adding a **Blitter** subscription 
 - Custom backgrounds and avatar support
 - UI improvements, themes, & customisation
 - Expand markdown
