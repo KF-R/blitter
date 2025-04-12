@@ -204,7 +204,7 @@ Add other **Blitter** `.onion` sites as subscriptions:
 - Dissenters.
 - Organisers.
 - Democracy defenders.
-- "Annexation" defenders (e.g. 🇺🇦,🇨🇦,🇬🇱,🇵🇦,🇹🇼 etc.).
+- "Annexation" defenders.
 - Nerds with taste.
 - You.
 
@@ -212,7 +212,7 @@ Add other **Blitter** `.onion` sites as subscriptions:
 
 ## ☠️ Disclaimer
 
-This is an experimental project. It’s built for resilience and independence, not convenience or mainstream use. Use responsibly. And pseudonymously.
+This is an experimental project. It’s built for resilience and independence. Use responsibly. 
 
 ---
 
@@ -227,5 +227,5 @@ This is an experimental project. It’s built for resilience and independence, n
 - OpenAI (o3-mini-high greatly accelerated development)
 - The Internet (for still being broken enough to inspire projects like this)
 - You, for resisting authoritarian despots, imperialism, oligarchs and warmongers.
-
+  
 ---
