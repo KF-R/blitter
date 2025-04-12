@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.3'
+APP_VERSION = '0.3.5'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks]"
 import os
@@ -19,8 +19,12 @@ from flask import Flask, request, jsonify, render_template_string, redirect, url
 import html
 import re
 import hashlib
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives import hashes, serialization
 import logging
 import argparse
+
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -43,7 +47,7 @@ try:
     from stem import Signal, ProtocolError
 except ImportError:
     logger.error("--- 'stem' library not found. ---")
-    logger.error("Check tor is installed and then install Python requirements with:\n{REQUIREMENTS_INSTALL_STRING}\n")
+    logger.error(f"Check tor is installed and then install Python requirements with:\n{REQUIREMENTS_INSTALL_STRING}\n")
     logger.error("Exiting...")
     exit()
 
@@ -85,7 +89,8 @@ def init_db():
             location TEXT,
             description TEXT,
             email TEXT,
-            website TEXT
+            website TEXT,
+            pubkey TEXT
         )
     ''')
     c.execute('''
@@ -131,21 +136,24 @@ def get_local_profile():
 def update_local_profile(profile_data):
     conn = get_db_connection()
     c = conn.cursor()
+    local_pubkey = get_public_key_x25519()
     c.execute("""
-         INSERT INTO profiles (site, nickname, location, description, email, website)
-         VALUES (?, ?, ?, ?, ?, ?)
+         INSERT INTO profiles (site, nickname, location, description, email, website, pubkey)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(site) DO UPDATE SET 
             nickname=excluded.nickname,
             location=excluded.location,
             description=excluded.description,
             email=excluded.email,
-            website=excluded.website
+            website=excluded.website,
+            pubkey=excluded.pubkey
     """, (SITE_NAME,
           profile_data.get("nickname", ""),
           profile_data.get("location", ""),
           profile_data.get("description", ""),
           profile_data.get("email", ""),
-          profile_data.get("website", "")))
+          profile_data.get("website", ""),
+          local_pubkey))
     conn.commit()
     conn.close()
 
@@ -156,27 +164,33 @@ def get_profile(site):
     row = c.fetchone()
     conn.close()
     if row:
-        return dict(zip(["site", "nickname", "location", "description", "email", "website"], row))
+        keys = ["site", "nickname", "location", "description", "email", "website", "pubkey"]
+        return dict(zip(keys, row))
     return {}
 
 def upsert_subscription_profile(site, info):
+    """
+    Store remote subscription profile including pubkey
+    """
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("""
-         INSERT INTO profiles (site, nickname, location, description, email, website)
-         VALUES (?, ?, ?, ?, ?, ?)
+         INSERT INTO profiles (site, nickname, location, description, email, website, pubkey)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(site) DO UPDATE SET
             nickname=excluded.nickname,
             location=excluded.location,
             description=excluded.description,
             email=excluded.email,
-            website=excluded.website
+            website=excluded.website,
+            pubkey=excluded.pubkey
     """, (site,
           info.get('nickname', ''),
           info.get('location', ''),
           info.get('description', ''),
           info.get('email', ''),
-          info.get('website', '')))
+          info.get('website', ''),
+          info.get('pubkey', '')))
     conn.commit()
     conn.close()
 
@@ -197,7 +211,7 @@ def insert_blat(recipient, sender, timestamp, subject, content, flags):
         conn.close()
     return True
 
-def insert_bleet(msg_str):
+def insert_bleet_from_string(msg_str):
     parts = parse_bleet_string(msg_str)
     if not parts:
         return False
@@ -280,8 +294,8 @@ def get_combined_feed():
             prof = get_profile(post['site'])
             post['nickname'] = prof.get('nickname', '')
         else:
-            local_prof = get_local_profile()
-            post['nickname'] = local_prof.get('nickname', 'User')
+            local_profile = get_local_profile()
+            post['nickname'] = local_profile.get('nickname', 'User')
     return posts
 
 # --- Helper Functions ---
@@ -447,6 +461,84 @@ def normalize_onion_address(onion_input):
         dir_name = onion_input
         onion_input += '.onion'
     return onion_input, dir_name
+
+# --- Encryption utility functions ---
+
+def encrypt(shared_secret, plaintext):
+    aesgcm = AESGCM(shared_secret)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+    return base64.b64encode(nonce + ciphertext).decode()
+
+def decrypt(shared_secret, encrypted_message):
+    data = base64.b64decode(encrypted_message)
+    nonce, ciphertext = data[:12], data[12:]
+    aesgcm = AESGCM(shared_secret)
+    return aesgcm.decrypt(nonce, ciphertext, None).decode()
+
+def get_blitsec(service_dir):
+    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+    try:
+        with open(key_file_path, 'rb') as f:
+            key_data = f.read()
+        if len(key_data) != 96:
+             rifueError(f"Key file size is incorrect for old format ({len(key_data)} bytes found)")
+        return key_data[32:64]
+    except FileNotFoundError:
+        logger.error("Secret key file not found: %s", key_file_path)
+        return None
+    except ValueError as ve:
+        logger.error("Error reading key file %s: %s", key_file_path, ve)
+        return None
+    except Exception as e:
+        logger.error("Error processing key file %s: %s", key_file_path, e)
+        return None
+  
+def ed25519_seed_to_x25519(ed_seed: bytes) -> bytes:
+    """
+    Convert a 32-byte Ed25519 seed to an X25519 private key bytes.
+    h = SHA512(ed_seed)
+    a = h[:32] clamped with:
+        a[0] &= 248; a[31] &= 127; a[31] |= 64
+    """
+    h = hashlib.sha512(ed_seed).digest()
+    a = bytearray(h[:32])
+    a[0] &= 248
+    a[31] &= 127
+    a[31] |= 64
+    return bytes(a)
+
+def get_x25519_private_key_from_seed() -> X25519PrivateKey:
+    """Obtain the X25519 private key from our stored Ed25519 seed."""
+    onion_dir = find_first_onion_service_dir(KEYS_DIR)
+    ed_seed = get_blitsec(onion_dir)  # 32-byte Ed25519 seed
+    xpriv_bytes = ed25519_seed_to_x25519(ed_seed)
+    return X25519PrivateKey.from_private_bytes(xpriv_bytes)
+
+def get_public_key_x25519() -> str:
+    """
+    Compute our X25519 public key (base64-encoded) so that remote sites
+    can use it for the Diffie-Hellman exchange.
+    """
+    xpriv = get_x25519_private_key_from_seed()
+    xpub = xpriv.public_key()
+    pub_bytes = xpub.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+    return base64.b64encode(pub_bytes).decode('ascii')
+
+def compute_shared_secret_x25519(my_seed: bytes, peer_pubkey_b64: str) -> bytes:
+    """
+    Given our Ed25519 seed and the peer’s public key (base64 encoded),
+    compute the shared secret using X25519.
+    The derived secret is post-processed via SHA256.
+    """
+    my_private = get_x25519_private_key_from_seed()  # from our seed
+    peer_pub_bytes = base64.b64decode(peer_pubkey_b64)
+    peer_public = X25519PublicKey.from_public_bytes(peer_pub_bytes)
+    shared = my_private.exchange(peer_public)
+    return hashlib.sha256(shared).digest()  # final 32-byte symmetric key
 
 # --- Tor Integration Functions ---
 
@@ -735,23 +827,23 @@ PROFILE_TEMPLATE = """
     <form method="post">
         <div class="form-group">
         <label for="nickname">Nickname</label>
-        <input type="text" name="nickname" id="nickname" value="sysop">
+        <input type="text" name="nickname" id="nickname" value="{{ profile.nickname }}">
         </div>
         <div class="form-group">
         <label for="location">Location</label>
-        <input type="text" name="location" id="location" value="Ottawa">
+        <input type="text" name="location" id="location" value="{{ profile.location }}">
         </div>
         <div class="form-group">
         <label for="description">Description</label>
-        <textarea name="description" id="description" rows="4">This is the first Blitter profile</textarea>
+        <textarea name="description" id="description" rows="4">{{ profile.description }}</textarea>
         </div>
         <div class="form-group">
         <label for="email">Email</label>
-        <input type="text" name="email" id="email" value="">
+        <input type="text" name="email" id="email" value="{{ profile.email }}">
         </div>
         <div class="form-group">
         <label for="website">Website</label>
-        <input type="text" name="website" id="website" value="">
+        <input type="text" name="website" id="website" value="{{ profile.website }}">
         </div>
         <input type="submit" value="Update Profile">
     </form>
@@ -794,7 +886,7 @@ INDEX_TEMPLATE = """
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                 <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
-                <input type="submit" value="Post" style="margin: 5px;">
+                <input type="submit" value="Bleet" style="margin: 5px;">
                 <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
                 <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
             </form>
@@ -943,8 +1035,11 @@ INDEX_TEMPLATE = """
 
 SUBSCRIPTIONS_TEMPLATE = """
 <div class="subscriptions-header">
-    Timeline 
+    Bleet Timeline 
     <span style="font-size: 0.6em; margin-left:20px;">{{ utc_time }}</span>
+    {% if logged_in %}
+    <span style="margin-left:40px;"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
+    {% endif %}
 </div>
 {% for post in combined_feed %}
 <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
@@ -1030,12 +1125,81 @@ FOOTER_TEMPLATE = """
        <p style="text-align: center; font-size: 0.8em;">Blitter Node v{{ app_version }} | Protocol v{{ protocol_version }}</p>
 """
 
+VIEW_BLATS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blats View for {{ site_name }}</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    </style>
+{{ css_base|safe }}
+</head>
+<body>
+    <div class="header">
+        <span class="logo">
+            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
+            Blitter
+        </span>
+        <span class="controls">
+            <a href="{{ url_for('profile') }}">Profile</a> |
+            <a href="{{ url_for('logout') }}">Logout</a>
+        </span>
+        <div class="site-name">
+            {{ ('<a href="http://' ~ site_name ~ '.onion">' ~ profile.nickname ~ '</a>') | safe }}:
+            <span id="site-name">{{ site_name }}</span>
+            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
+        </div>
+    </div>
+    <hr/>
+    <div class="content">
+        <table>
+            <thead>
+                <tr>
+                    {% if rows|length > 0 %}
+                    <th>recipient</th>
+                    <th>sender</th>
+                    <th>timestamp</th>
+                    <th>subject</th>
+                    <th>content</th>
+                    <th>Delivered/Read</th>
+                    {% else %}
+                    <th>No Data</th>
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for blat in rows %}
+                <tr>
+                    <td>{{ blat.recipient }}</td>
+                    <td>{{ blat.sender }}</td>
+                    <td>{{ blat.timestamp }}</td>
+                    <td>{{ blat.subject }}</td>
+                    <td>{{ blat.content }}</td>
+                    <td>{{ blat.flags }}</td>
+                </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="6">No records found.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="footer">
+{{ footer_section|safe }}
+    </div>  
+</body>
+</html>
+"""
+
 VIEW_THREAD_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
     <title>Blitter Thread - {{ site_name }}</title>
-{{ css_base|safe}}
+{{ css_base|safe }}
 </head>
 <body>
     <div class="header">
@@ -1126,7 +1290,7 @@ VIEW_THREAD_TEMPLATE = """
         </div>
     </div>
     <div class="footer">
-        {{ footer_section|safe }}
+{{ footer_section|safe }}
     </div>
     <script>
     function toggleChildren(id) {
@@ -1300,6 +1464,9 @@ def about():
     if local_profile.get("description"): about_profile.append(f'Desc: {local_profile["description"]}')
     if local_profile.get("email"): about_profile.append(f'Email: {local_profile["email"]}')
     if local_profile.get("website"): about_profile.append(f'Website: {local_profile["website"]}')
+    # Append our public key; if not already stored (should be set via update_local_profile)
+    pubkey = local_profile.get("pubkey") or get_public_key_x25519()
+    about_profile.append(f'pubkey: {pubkey}')
     if not about_profile:
          return "No profile information available.", 200, {'Content-Type': 'text/plain; charset=utf-8'}
     return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
@@ -1341,8 +1508,8 @@ def post():
     if not new_bleet_str:
         logger.error("Failed to create bleet string (check logs). Post rejected.")
         return redirect(url_for('index'))
-    if insert_bleet(new_bleet_str):
-        logger.info("New post added with timestamp: %s", timestamp)
+    if insert_bleet_from_string(new_bleet_str):
+        logger.info("New bleet added with timestamp: %s", timestamp)
     else:
         logger.error("Error inserting post into database.")
     return redirect(url_for('index'))
@@ -1465,10 +1632,50 @@ def view_thread(bleet_id):
     )
     return view_thread_html
 
+@app.route('/view_blats')
+def view_blats():
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute('SELECT * FROM blats').fetchall()
+    conn.close()
+
+    parsed_rows = []
+    for row in rows:
+        row_dict = dict(row)  # make a mutable copy
+
+        if row_dict['recipient'] == SITE_NAME:
+            row_dict['recipient'] = 'you'
+            if row_dict['flags'] == '0' * 16:
+                row_dict['flags'] = 'Unread'
+            else:
+                row_dict['flags'] = 'Read'
+
+        if row_dict['sender'] == SITE_NAME:
+            row_dict['sender'] = 'you'
+            if row_dict['flags'] == '0' * 16:
+                row_dict['flags'] = 'Undelivered'
+            else:
+                row_dict['flags'] = 'Delivered'
+
+        row_dict['timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
+            
+        parsed_rows.append(row_dict)
+
+    common = get_common_context()
+    return render_template_string(
+        VIEW_BLATS_TEMPLATE,
+        css_base=CSS_BASE,
+        header_section=common['header_section'],
+        footer_section=common['footer_section'],
+        site_name=common['site_name'],
+        profile=common['profile'],
+        rows=parsed_rows)
+
 @app.route('/blat/<string:blat_recipient>')
 def blat(blat_recipient):
-    # TODO Validate blat_recipient address
-    # TODO Process blat
     common = get_common_context()
     return render_template_string(
         BLAT_TEMPLATE, 
@@ -1480,6 +1687,62 @@ def blat(blat_recipient):
         site_name=SITE_NAME,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32) 
 
+def deliver_blat(recipient, timestamp, subject, content, flags):
+    """Post blat directly to recipient's /rx_blat endpoint using X25519 key exchange."""
+    logger.info("Attempting to deliver blat to: %s", recipient)
+    onion_dir = find_first_onion_service_dir(KEYS_DIR)
+    # Look up the recipient's stored public key (from the subscription profile)
+    remote_profile = get_profile(recipient)
+    remote_pubkey = remote_profile.get("pubkey")
+    if not remote_pubkey:
+         logger.error("Missing remote public key for recipient %s", recipient)
+         return "Error sending message: missing remote public key.", 500
+    shared_secret = compute_shared_secret_x25519(get_blitsec(onion_dir), remote_pubkey)
+    encrypted_message = encrypt(shared_secret, f"{subject}|{content}")
+    payload = {
+        'recipient': recipient,
+        'sender': SITE_NAME,
+        'timestamp': timestamp,
+        'encrypted_message': encrypted_message,
+        'flags': flags
+    }
+    print(f"TX Payload:\n\n{payload}\n\n")
+    try:
+        response = requests.post(
+            f'http://{recipient}.onion/rx_blat',
+            json=payload,
+            proxies={"http": SOCKS_PROXY, "https": SOCKS_PROXY},
+            timeout=30
+        )
+
+        if response.ok:
+            result = response.json()
+            if result.get('status') == 'received':
+                logger.info("Blat successfully delivered and acknowledged.")
+                 
+                 # Mark blat as delivered by setting last bit of flags to 1
+                conn = get_db_connection()
+                conn.execute(
+                    'UPDATE blats SET flags = ? WHERE sender = ? AND timestamp = ?',
+                    ('0000000000000001', SITE_NAME, timestamp)
+                )
+                conn.commit()
+                conn.close()
+
+            else:
+                logger.warning("Blat delivered but response not acknowledged as expected: %s", result)
+        else:
+            logger.error("Blat delivery failed with status: %d", response.status_code)
+        return redirect(url_for('view_blats'))
+
+    except requests.exceptions.Timeout:
+        logger.error("Timed out attempting to deliver blat to %s.", recipient)
+    except requests.exceptions.RequestException as e:
+        logger.error("Error communicating with %s: %s", recipient, e)
+    except Exception as e:
+        logger.error("Unexpected error delivering to %s: %s", recipient, e)
+    return "Error sending message.", 500
+
 @app.route('/send_blat', methods=['POST'])
 def send_blat():
     if not is_logged_in():  
@@ -1489,7 +1752,7 @@ def send_blat():
     blat_recipient=request.form.get('blat_recipient')
     subs = [sub['site'] for sub in get_all_subscriptions()]
     if blat_recipient not in subs:
-        log.error("Blat recipient (%s) not in subscriptions list.", blat_recipient)
+        logger.error("Blat recipient (%s) not in subscriptions list.", blat_recipient)
         return redirect(url_for('index'))
 
     timestamp = get_current_timestamp_hex()
@@ -1506,6 +1769,10 @@ def send_blat():
 
     if insert_blat(blat_recipient, SITE_NAME, timestamp, subject, content, '0'*16):
         logger.info("New blat added with timestamp: %s", timestamp)
+
+        # Attempt to deliver blat immediately
+        deliver_blat(blat_recipient, timestamp, subject, content, '0'*16)
+
     else:
         logger.error("Error inserting blat into database.")
     return redirect(url_for('index'))
@@ -1537,13 +1804,14 @@ def add_subscription():
             temp_info = {}
             if lines and lines[0].strip().lower() != onion_input:
                  logger.warning("/about first line '%s' does not match expected onion address '%s'", lines[0], onion_input)
+            # Process key/value lines 
             for line in lines[1:]:
                  if ":" in line:
                      try:
                          key, value = line.split(":", 1)
                          key = key.strip().lower()
                          value = value.strip()
-                         if key in ['nickname', 'loc', 'desc', 'email', 'website']:
+                         if key in ['nickname', 'loc', 'desc', 'email', 'website', 'pubkey']:
                               if key == 'loc': key = 'location'
                               if key == 'desc': key = 'description'
                               temp_info[key] = value
@@ -1621,7 +1889,7 @@ def fetch_and_process_feed(site):
               if exists:
                   duplicate_timestamps += 1
                   continue
-              if insert_bleet(msg_str):
+              if insert_bleet_from_string(msg_str):
                   new_bleets_added += 1
         if malformed_lines > 5:
              logger.warning("[Fetcher] ...skipped %d more malformed lines from %s.", malformed_lines - 5, site_onion)
@@ -1756,6 +2024,57 @@ def subscriptions_panel():
         site_name=SITE_NAME
     )
 
+@app.route('/rx_blat', methods=['POST'])
+def rx_blat():
+    """Receive encrypted blat from another user using X25519 key exchange."""
+    data = request.get_json()
+    recipient = data.get('recipient')
+    sender = data.get('sender')
+    timestamp = data.get('timestamp')
+    encrypted_message = data.get('encrypted_message')
+    flags = data.get('flags') or '0'*16
+    payload = {
+        'recipient': recipient,
+        'sender': sender,
+        'timestamp': timestamp,
+        'encrypted_message': encrypted_message,
+        'flags': flags
+    }
+    print(f"RX Payload:\n\n{payload}\n\n")
+    if not recipient or recipient != SITE_NAME:
+        logger.warning("Failed delivery attempt: recipient unknown")
+        abort(403)
+    subs = [sub['site'] for sub in get_all_subscriptions()]
+    if not sender or sender not in subs:
+        logger.warning("Failed delivery attempt: sender unknown")
+        abort(403)
+    if not timestamp:
+        logger.warning("Failed delivery attempt: timestamp not included")
+        abort(403)
+    # Look up sender's public key from our subscription records
+    sender_profile = get_profile(sender)
+    sender_pubkey = sender_profile.get("pubkey")
+    if not sender_pubkey:
+        logger.error("Missing sender public key for %s", sender)
+        abort(403)
+    onion_dir = find_first_onion_service_dir(KEYS_DIR)
+    shared_secret = compute_shared_secret_x25519(get_blitsec(onion_dir), sender_pubkey)
+    try:
+        plaintext = decrypt(shared_secret, encrypted_message)
+        subject, content = plaintext.split('|', 1)
+    except Exception as e:
+        logger.error("Error during decryption for blat from %s: %s", sender, e)
+        abort(500)
+    logger.info(f"Blat received from {sender}:\n\n{plaintext}\n\n")
+    recorded = insert_blat(SITE_NAME, sender, timestamp, subject, content, flags)
+    if not recorded:
+        logger.error("Failed to add received blat (%s) to database.", f"sender:timestamp")
+        abort(500)
+    else:
+        logger.info("Incoming blat added to local database.")
+
+    return jsonify({'status': 'received'})
+
 def get_common_context():
     local_profile = get_local_profile()
     return {
@@ -1867,6 +2186,7 @@ def initialize_app():
         if secret_word_data and 'secret_word' in secret_word_data:
             secret_word = secret_word_data.get("secret_word")
         if secret_word:
+                if secret_word == 'changeme': logger.warning("Default secret word remains unchanged. Change it soon.")
                 logger.info("Using secret word from %s to derive passphrase.", secret_file_path)
                 passphrase_words = get_passphrase(onion_dir, secret_word)
                 passphrase = " ".join(passphrase_words)
