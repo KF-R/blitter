@@ -12,20 +12,35 @@ Think of it as a federated Twitter in the dark—only you control your identity,
 
 Blitter is:
 
-- 🧱 A **minimalist microblog** engine.
+- 🧱 A **minimalist microblog** engine. Anonymous and secure.
 - 🧅 **Tor-native**, hosting each user's feed as a v3 onion service.
 - 📡 **Federated**, with each instance pulling updates from subscribed peers.
 - 🔒 **Anti-fragile** and **censorship-resistant** by design.
-- 🧬 Fully contained in a **single Python file** for simplicity and deployability.
+- 🧬 Self-contained in a **single Python file** for simplicity and deployability.
+
+## 🧑‍💻 Key concepts
+
+- Self hosted **Blitter** server: your 'username' is your 56 character onion address (with custom nicknames)
+- You can broadcast status updates or **_Bleets_**, which are available to anyone visiting your **_Blitter_** site.
+- Other users can subscribe to your feed to receive it aggregated into their own timeline.
+- You can subscribe to other Blitter feeds to aggregate them into your own timeline.
+- You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any Blitter user suscribed to your feed. 
 
 ---
 
 ## 💡 How It Works
 
 1. You run Blitter and it spins up a Tor hidden service.
-2. Your posts (called *bleets*) are broadcast as a text-based feed over tor, with its `.onion` addresses.
+2. Your updates (called **_Bleets_**) are broadcast as a text-based feed over tor, with its secure `.onion` addresses.
 3. You can subscribe to other Blitter sites (by onion address), and your node will fetch their feeds periodically.
 4. That’s it. You’re on your own dark microblog island, linking arms with others.
+5. As well as **_Bleets_**, you can send and recieve direct encryped messages called **_Blats_** with other **Blitter** users. 
+
+## Technical Details
+
+1. ed25519 secret keys are used, along with a changeable secret word to generate a pass phrase for authenticating the Blitter user, who acts as the sole user and administrator of their own site.
+2. **_Bleets_** are fetched by way of regular timed pulls from subscribed sites, directly over tor socks proxy.
+3. **_Blats_** are negotiated using a public key derived from the site's identity and a Diffie-Hellman exchange ensures secure end-to-end encryption.
 
 ---
 
