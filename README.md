@@ -58,14 +58,20 @@ Blitter is:
 
 ### Installation:
 
+**Requirements:**
 ```bash
 sudo apt install tor
-pip install flask stem requests[socks]
+pip install flask stem requests[socks] cryptography
+```
+**Blitter**
+```bash
+git clone https://github.com/KF-R/blitter
 ```
 
 ## Key Generation
 
-A tor v3 vanity onion address generator is now included, however it should be noted that a tool like [mkp224o](https://github.com/cathugger/mkp224o) leverages lower level code and optimisations and will generate keys **_much_** faster, making slightly longer vanity prefixes viable. 
+Before you can launch **Blitter** you'll need a key. You can just run the included keygen or you can try to generate a custom vanity address.
+Note that a dedicated low-level tool like [mkp224o](https://github.com/cathugger/mkp224o) will generate keys _much_ faster, making slightly longer vanity prefixes viable. 
 
 ## Keygen Requirements
 
@@ -96,15 +102,19 @@ Most new **Blitter** users may want to simply generate an address without a cust
 python keygen.py
 ```
 
----
-
-## How the Keygen works
+### How the Keygen works
 
 1. **Key Generation:** Each worker process generates Ed25519 key pairs.
 2. **Address Calculation:** Computes the Tor v3 onion address using the public key.
 3. **Prefix Matching:** Workers check if the onion address starts with the specified prefix.
 4. **Progress Reporting:** The main process aggregates per-worker metrics and prints overall and individual key generation rates.
 5. **Service Setup:** Upon a match, the script creates a dedicated service directory and writes out the `hs_ed25519_secret_key` file.
+
+### Alternative keygen notes
+
+If you use an alternative ed25519 (tor v3) keygen, like the aforementioned mkp224o for example, simply drop the resulting `xxx...xxx.onion` directory containing the key files in `<your blitter directory>/keys/`.
+
+_Note that if multiple key directories are found, the first found will be used, so manage your keys directory appropriately._
 
 ---
 
@@ -133,10 +143,11 @@ http://bleetmsropwd4542scsvoep3odcqof5hxgvt42heqw5zbsjxatcmxnyd.onion
 Each node:
 - Exposes a v3 onion service on port 80.
 - Publishes messages in a plaintext feed format (`/feed` endpoint).
-- Responds to `/about` with basic profile metadata.
+- Responds to `/about` with basic profile metadata and pubkey for private messages.
 - Periodically fetches posts from subscribed nodes via Tor SOCKS5 proxy.
+- Uses secure Diffie-Hellman exchange to transfer private messages directly. 
 
-### 🔐 Protocol Format
+### 🔐 **_Bleet_** Protocol Format
 
 Messages use a structured bar-delimited string:
 
@@ -179,7 +190,7 @@ Add other **Blitter** `.onion` sites as subscriptions:
 ## 🧠 Features & Design Highlights
 
 - 🔑 Passphrase-based login derived from secret Tor key + BIP-39.
-- 🔐 Diffie-Hellman secure end-to-end encryption for private messages.
+- 🔐 End-to-end encryption for private messages.
 - 🔁 Fully offline-capable (local-only viewing possible).
 - 🔂 Threaded replies.
 - 🔍 View raw message format for transparency.
