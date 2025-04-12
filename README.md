@@ -21,24 +21,24 @@ Blitter is:
 ## 🧑‍💻 Key concepts
 
 - Self hosted **Blitter** server: your 'username' is your 56 character onion address (with custom nicknames)
-- You can broadcast status updates or **_Bleets_**, which are available to anyone visiting your **_Blitter_** site.
+- You can broadcast status updates or **_Bleets_**, which are available to anyone visiting your **Blitter** site.
 - Other users can subscribe to your feed to receive it aggregated into their own timeline.
-- You can subscribe to other Blitter feeds to aggregate them into your own timeline.
-- You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any Blitter user suscribed to your feed. 
+- You can subscribe to other **Blitter** feeds to aggregate them into your own timeline.
+- You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any **Blitter** user suscribed to your feed. 
 
 ---
 
 ## 💡 How It Works
 
-1. You run Blitter and it spins up a Tor hidden service.
+1. You run **Blitter** and it spins up a Tor hidden service.
 2. Your updates (called **_Bleets_**) are broadcast as a text-based feed over tor, with its secure `.onion` addresses.
-3. You can subscribe to other Blitter sites (by onion address), and your node will fetch their feeds periodically.
+3. You can subscribe to other **Blitter** sites (by onion address), and your node will fetch their feeds periodically.
 4. That’s it. You’re on your own dark microblog island, linking arms with others.
 5. As well as **_Bleets_**, you can send and recieve direct encryped messages called **_Blats_** with other **Blitter** users. 
 
 ## Technical Details
 
-1. ed25519 secret keys are used, along with a changeable secret word to generate a pass phrase for authenticating the Blitter user, who acts as the sole user and administrator of their own site.
+1. ed25519 secret keys are used, along with a changeable secret word to generate a pass phrase for authenticating the **Blitter** user, who acts as the sole user and administrator of their own site.
 2. **_Bleets_** are fetched by way of regular timed pulls from subscribed sites, directly over tor socks proxy.
 3. **_Blats_** are negotiated using a public key derived from the site's identity and a Diffie-Hellman exchange ensures secure end-to-end encryption.
 
@@ -90,7 +90,7 @@ python keygen.py --prefix abcd --key-dir keys --workers 4
 - `--workers`: Number of worker processes to use (default: the number of CPU cores).
 
 
-Most new Blitter users may want to simply generate an address without a custom "vanity" prefix, which should be near-instantaneous:
+Most new **Blitter** users may want to simply generate an address without a custom "vanity" prefix, which should be near-instantaneous:
 
 ```bash
 python keygen.py
@@ -109,20 +109,18 @@ python keygen.py
 ---
 
 
-## Launching Blitter:
+## Launching **Blitter**:
 
 ```bash
 python blitter.py
 ```
-
-
 
 On first run:
 - **A Tor onion service key will be required (see above).**
 - You’ll get a passphrase derived from your key and a local secret word.
 - Visit `http://127.0.0.1:5000` and login with that passphrase.
 
-Your Blitter site will be available (using the [tor browser](https://www.torproject.org/)) at something like:
+Your **Blitter** site will be available (using the [tor browser](https://www.torproject.org/)) at something like:
 ```
 http://bleetmsropwd4542scsvoep3odcqof5hxgvt42heqw5zbsjxatcmxnyd.onion
 ```
@@ -170,8 +168,8 @@ Example:
 
 ### 📥 Subscriptions
 
-Add other Blitter `.onion` sites as subscriptions:
-- Blitter fetches `/about` and `/feed` over Tor.
+Add other **Blitter** `.onion` sites as subscriptions:
+- **Blitter** fetches `/about` and `/feed` over Tor.
 - Messages are verified, parsed, and stored locally.
 - Feeds are merged in the UI, sorted by timestamp.
 
@@ -220,7 +218,7 @@ This is an experimental project. It’s built for resilience and independence, n
 
 ## License
 
-Blitter is proudly open-source under the GPLv3 license, promoting transparency, freedom, and collaboration.
+**Blitter** is proudly open-source under the GPLv3 license, promoting transparency, freedom, and collaboration.
 
 ## 🤝 Acknowledgments
 
