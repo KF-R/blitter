@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.8'
+APP_VERSION = '0.3.11'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -24,7 +24,6 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives import hashes, serialization
 import logging
 import argparse
-
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -72,6 +71,8 @@ SITE_NAME = "tor_setup_pending"  # Placeholder until Tor setup
 tor_controller = None
 tor_service_id = None
 onion_address = None
+onion_dir = None
+passphrase = None
 fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 fetch_lock = threading.Lock()
 fetch_timer = None
@@ -325,9 +326,9 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
         logger.critical("FATAL ERROR: Failed to load BIP-0039 wordlist '%s': %s", filepath, e)
         sys.exit(1)
 
-def get_passphrase(service_dir, secret_word) -> list:
+def get_passphrase(secret_word) -> list:
     bip39 = load_bip39_wordlist()
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+    key_file_path = os.path.join(onion_dir, "hs_ed25519_secret_key")
     try:
         with open(key_file_path, "rb") as f:
             f.seek(-64, os.SEEK_END)
@@ -349,7 +350,7 @@ def get_passphrase(service_dir, secret_word) -> list:
         shift = (6 - i - 1) * 11
         index = (truncated >> shift) & 0x7FF
         words.append(bip39[index])
-    return words
+    return " ".join(words)
 
 def get_current_timestamp_hex():
     ns_timestamp = time.time_ns()
@@ -476,8 +477,8 @@ def decrypt(shared_secret, encrypted_message):
     aesgcm = AESGCM(shared_secret)
     return aesgcm.decrypt(nonce, ciphertext, None).decode()
 
-def get_blitsec(service_dir):
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+def get_blitsec():
+    key_file_path = os.path.join(onion_dir, "hs_ed25519_secret_key")
     try:
         with open(key_file_path, 'rb') as f:
             key_data = f.read()
@@ -510,8 +511,7 @@ def ed25519_seed_to_x25519(ed_seed: bytes) -> bytes:
 
 def get_x25519_private_key_from_seed() -> X25519PrivateKey:
     """Obtain the X25519 private key from our stored Ed25519 seed."""
-    onion_dir = find_first_onion_service_dir(KEYS_DIR)
-    ed_seed = get_blitsec(onion_dir)  # 32-byte Ed25519 seed
+    ed_seed = get_blitsec()  # 32-byte Ed25519 seed
     xpriv_bytes = ed25519_seed_to_x25519(ed_seed)
     return X25519PrivateKey.from_private_bytes(xpriv_bytes)
 
@@ -560,33 +560,22 @@ def find_first_onion_service_dir(keys_dir):
     logger.info("No suitable key directories found in '%s'.", keys_dir)
     return None
 
-def get_key_blob(service_dir):
-    key_file_path = os.path.join(service_dir, "hs_ed25519_secret_key")
+def get_key_blob():
+    key_file_path = os.path.join(onion_dir, "hs_ed25519_secret_key")
     try:
         with open(key_file_path, 'rb') as f:
             key_data = f.read()
-        is_new_format = key_data.startswith(b'== ed25519v1-secret: type0 ==\x00\x00\x00')
-        is_old_format = key_data.startswith(b'== ed25519v1-secret: type0 ==') and len(key_data) == 96
-        if not (is_new_format or is_old_format):
-             raise ValueError("Key file format is incorrect. Header mismatch.")
-        if is_new_format and len(key_data) < 64+32:
-             raise ValueError(f"Key file size is incorrect for new format ({len(key_data)} bytes found)")
-        elif is_old_format and len(key_data) != 96:
-             raise ValueError(f"Key file size is incorrect for old format ({len(key_data)} bytes found)")
         key_material_64 = key_data[-64:]
         key_blob = base64.b64encode(key_material_64).decode('ascii')
         return f"ED25519-V3:{key_blob}"
     except FileNotFoundError:
         logger.error("Secret key file not found: %s", key_file_path)
         return None
-    except ValueError as ve:
-        logger.error("Error reading key file %s: %s", key_file_path, ve)
-        return None
     except Exception as e:
         logger.error("Error processing key file %s: %s", key_file_path, e)
         return None
 
-def start_tor_hidden_service(key_blob_with_type):
+def start_tor_hidden_service(key_blob):
     global tor_controller, tor_service_id, onion_address, SITE_NAME
     try:
         logger.info("Connecting to Tor controller...")
@@ -594,7 +583,7 @@ def start_tor_hidden_service(key_blob_with_type):
         controller.authenticate()
         logger.info("Authenticated with Tor controller.")
         command = (
-            f"ADD_ONION {key_blob_with_type} "
+            f"ADD_ONION {key_blob} "
             f"Flags=Detach "
             f"Port={ONION_PORT},{FLASK_HOST}:{FLASK_PORT}"
         )
@@ -743,7 +732,6 @@ CSS_BASE = """
         .site-info { margin-left: 10px; font-size: 0.9em; }
         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
         .subscription-site-name { font-weight: bold; color: #aaa; }
-
     </style>
 
 """
@@ -1153,11 +1141,20 @@ VIEW_BLATS_TEMPLATE = """
         </div>
     </div>
     <hr/>
+    <div class="blats-table-nav" style="margin-bottom:20px;">
+        <span class="blat-filters">[ <a href="/view_blats">All</a> ]  [ <a href="/view_blats?filter=inbox">Inbox</a> ]  [ <a href="/view_blats?filter=sent">Sent</a> ]  [ <a href="/view_blats?filter=outbox">Outbox</a> ]</span>
+        <span style="margin-left:60px;">{{ utc_time }}</span>
+    </div>
+    <hr/>
+    {% if retry_result %}
+    <div class="retry-result">
+        <p>
+        <span>{{ retry_result }}</span>
+        </p>
+    </div>
+    <hr/>
+    {% endif %}
     <div class="content">
-        <div class="blats-table-nav" style="margin-bottom:20px;">
-            <span class="blat-filters">[ <a href="/view_blats">All</a> ]  [ <a href="/view_blats?filter=inbox">Inbox</a> ]  [ <a href="/view_blats?filter=sent">Sent</a> ]  [ <a href="/view_blats?filter=outbox">Outbox</a> ]</span>
-            <span style="margin-left:60px;">{{ utc_time }}</span>
-        </div>
         <table>
             <thead>
                 <tr>
@@ -1178,10 +1175,16 @@ VIEW_BLATS_TEMPLATE = """
                 <tr>
                     <td>{{ (('<span class="nickname">' ~ blat.recipient_nick ~ ':</span> ') if blat.recipient_nick else '') | safe }}{{ blat.recipient }}</td>
                     <td>{{ (('<span class="nickname">' ~ blat.sender_nick ~ ':</span> ') if blat.sender_nick else '') | safe }}{{ blat.sender }}</td>
-                    <td>{{ blat.timestamp }}</td>
+                    <td>{{ blat.display_timestamp }}</td>
                     <td>{{ blat.subject }}</td>
                     <td>{{ blat.content }}</td>
-                    <td>{{ blat.flags }}</td>
+                    <td>
+                        {% if blat.flags == 'Retry' %}
+                            <a href="/view_blats?filter=outbox&retry={{ blat.timestamp }}">{{ blat.flags }}</a>
+                        {% else %}
+                            {{ blat.flags }}
+                        {% endif %}
+                        </td>
                 </tr>
                 {% else %}
                     <tr>
@@ -1409,43 +1412,19 @@ def login():
         return redirect(url_for('index'))
     error = None
     if request.method == 'POST':
-        secret_word_data = None
-        secret_word_file = os.path.join(KEYS_DIR, SECRET_WORD_FILE)
-        try:
-            with open(secret_word_file, 'r', encoding='utf-8') as f:
-                secret_word_data = json.load(f)
-        except Exception as e:
-            logger.error("Login failed: Secret word file error (%s).", e)
-        if not secret_word_data or 'secret_word' not in secret_word_data:
-             error = 'Secret word configuration is missing or invalid.'
-             logger.error("Login failed: Secret word file error.")
-             return render_template_string(LOGIN_TEMPLATE, error=error)
-        secret_word = secret_word_data.get("secret_word")
-        onion_dir = find_first_onion_service_dir(KEYS_DIR)
-        if not onion_dir:
-            error = 'Cannot locate Tor key directory to verify passphrase.'
-            logger.error("Login failed: Could not find Tor key directory.")
-            return render_template_string(LOGIN_TEMPLATE, error=error)
-        try:
-            correct_passphrase = " ".join(get_passphrase(onion_dir, secret_word))
-        except FileNotFoundError:
-             error = 'Tor key file not found. Cannot verify passphrase.'
-             logger.error("Login failed: Tor key file missing.")
-             return render_template_string(LOGIN_TEMPLATE, error=error)
-        except Exception as e:
-            error = f'Error generating expected passphrase: {e}'
-            logger.error("Login failed: Error during passphrase generation - %s", e)
-            return render_template_string(LOGIN_TEMPLATE, error=error)
-        if request.form.get('passphrase') == correct_passphrase:
-            session['logged_in'] = True
-            session.permanent = True
-            app.permanent_session_lifetime = datetime.timedelta(days=7)
-            logger.info("User logged in.")
-            return redirect(url_for('index'))
+        if not passphrase: 
+            error = 'Server error: authentication not ready.'
         else:
-            logger.error("Login failed: Invalid Credentials.")
-            error = 'Invalid Credentials. Please try again.'
-            time.sleep(1)
+            if request.form.get('passphrase') == passphrase:
+                session['logged_in'] = True
+                session.permanent = True
+                app.permanent_session_lifetime = datetime.timedelta(days=7)
+                logger.info("User logged in.")
+                return redirect(url_for('index'))
+            else:
+                logger.error("Login failed: Invalid Credentials.")
+                error = 'Invalid Credentials. Please try again.'
+                time.sleep(1)
     return render_template_string(LOGIN_TEMPLATE, css_base=CSS_BASE, site_name=SITE_NAME, error=error)
 
 @app.route('/logout')
@@ -1663,7 +1642,35 @@ def view_blats():
     else:
         rows = conn.execute('SELECT * FROM blats').fetchall()
 
-    conn.close()
+    retry_result = ""
+    retry_requested_for = request.args.get('retry', default=None, type=str)
+    if retry_requested_for:
+        retry_blat = conn.execute(
+            'SELECT * FROM blats WHERE sender = ? AND timestamp = ?',
+            (SITE_NAME, retry_requested_for)
+        ).fetchone()
+
+        if retry_blat:
+            logger.info(f"Attempting redelivery to {retry_blat['recipient']} for blat: {retry_requested_for}")
+            retry_result = deliver_blat(
+                retry_blat['recipient'], 
+                retry_requested_for, 
+                retry_blat['subject'], 
+                retry_blat['content'], 
+                retry_blat['flags']
+            )
+            logger.info(f"Redelivery result: {retry_result}")
+            if "Successfully delivered blat" in retry_result:
+                # Refetch unsent blats
+                rows = conn.execute(
+                    'SELECT * FROM blats WHERE sender = ? AND substr(flags, -1) = ?',
+                    (SITE_NAME, '0')
+                ).fetchall()
+
+        conn.close()
+
+    else:
+        conn.close()
 
     subs = get_all_subscriptions()
     nickname_map = {sub['site']: sub['nickname'] for sub in subs}
@@ -1676,18 +1683,23 @@ def view_blats():
 
         if row_dict['recipient'] == SITE_NAME:
             row_dict['recipient'] = local_nickname
-            row_dict['flags'] = 'Unread' if row_dict['flags'] == '0' * 16 else 'Read'
+            row_dict['flags'] = 'Unread' if row_dict['flags'][-1] == '0' else 'Read'
         elif row_dict['recipient'] in nickname_map:
             row_dict['recipient_nick'] = nickname_map[row_dict['recipient']]
 
-        # TODO: Add 'retry' to undelivered blats in outbox
         if row_dict['sender'] == SITE_NAME:
             row_dict['sender'] = local_nickname
-            row_dict['flags'] = 'Undelivered' if row_dict['flags'] == '0' * 16 else 'Delivered'
+            if row_dict['flags'][-1]=='0':
+                if (filter and filter == 'outbox'): 
+                    row_dict['flags'] = 'Retry'
+                else:
+                    row_dict['flags'] = 'Undelivered' 
+            else:
+                row_dict['flags']='Delivered'
         elif row_dict['sender'] in nickname_map:
             row_dict['sender_nick'] = nickname_map[row_dict['sender']]
 
-        row_dict['timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
+        row_dict['display_timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
 
         parsed_rows.append(row_dict)
 
@@ -1700,6 +1712,7 @@ def view_blats():
         footer_section=common['footer_section'],
         site_name=common['site_name'],
         profile=common['profile'],
+        retry_result=retry_result,
         rows=parsed_rows)
 
 @app.route('/blat/<string:blat_recipient>')
@@ -1718,14 +1731,13 @@ def blat(blat_recipient):
 def deliver_blat(recipient, timestamp, subject, content, flags):
     """Post blat directly to recipient's /rx_blat endpoint using X25519 key exchange."""
     logger.info("Attempting to deliver blat to: %s", recipient)
-    onion_dir = find_first_onion_service_dir(KEYS_DIR)
     # Look up the recipient's stored public key (from the subscription profile)
     remote_profile = get_profile(recipient)
     remote_pubkey = remote_profile.get("pubkey")
     if not remote_pubkey:
          logger.error("Missing remote public key for recipient %s", recipient)
          return "Error sending message: missing remote public key.", 500
-    shared_secret = compute_shared_secret_x25519(get_blitsec(onion_dir), remote_pubkey)
+    shared_secret = compute_shared_secret_x25519(get_blitsec(), remote_pubkey)
     encrypted_message = encrypt(shared_secret, f"{subject}|{content}")
     payload = {
         'recipient': recipient,
@@ -1756,6 +1768,8 @@ def deliver_blat(recipient, timestamp, subject, content, flags):
                 )
                 conn.commit()
                 conn.close()
+
+                return f"Successfully delivered blat to {recipient}."
 
             else:
                 logger.warning("Blat delivered but response not acknowledged as expected: %s", result)
@@ -1800,6 +1814,7 @@ def send_blat():
 
         # Attempt to deliver blat immediately
         deliver_blat(blat_recipient, timestamp, subject, content, '0'*16)
+        return redirect(url_for('view_blats'))
 
     else:
         logger.error("Error inserting blat into database.")
@@ -1864,7 +1879,7 @@ def add_subscription():
 def fetch_and_process_feed(site):
     site_onion = f"{site}.onion"
     feed_url = f"http://{site_onion}/feed"
-    logger.info("[Fetcher] Starting fetch for: %s", site_onion)
+    logger.info("[Fetcher] Starting fetch: %s", site_onion)
     new_bleets_added = 0
     try:
         proxies = {"http": SOCKS_PROXY, "https": SOCKS_PROXY}
@@ -1928,7 +1943,7 @@ def fetch_and_process_feed(site):
         if new_bleets_added > 0:
              logger.info("[Fetcher] Added %d new bleets for %s.", new_bleets_added, site_onion)
         else:
-             logger.info("[Fetcher] No new bleets for: %s.", site_onion)
+             logger.info("[Fetcher] No new bleets: %s.", site_onion)
     except Exception as e:
          logger.error("[Fetcher] Unexpected error processing feed for %s: %s", site_onion, e, exc_info=True)
          return 0
@@ -2085,8 +2100,7 @@ def rx_blat():
     if not sender_pubkey:
         logger.error("Missing sender public key for %s", sender)
         abort(403)
-    onion_dir = find_first_onion_service_dir(KEYS_DIR)
-    shared_secret = compute_shared_secret_x25519(get_blitsec(onion_dir), sender_pubkey)
+    shared_secret = compute_shared_secret_x25519(get_blitsec(), sender_pubkey)
     try:
         plaintext = decrypt(shared_secret, encrypted_message)
         subject, content = plaintext.split('|', 1)
@@ -2121,7 +2135,7 @@ def is_logged_in():
     return 'logged_in' in session and session['logged_in']
 
 def initialize_app():
-    global SITE_NAME, onion_address
+    global SITE_NAME, onion_address, onion_dir, passphrase
     logger.info("Initializing Blitter Node v%s (Protocol: %s)...", APP_VERSION, PROTOCOL_VERSION)
     os.makedirs(KEYS_DIR, exist_ok=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2149,7 +2163,7 @@ def initialize_app():
     logger.info("--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
-        key_blob = get_key_blob(onion_dir)
+        key_blob = get_key_blob()
         if key_blob:
             logger.info("Using key from: %s", onion_dir)
             if start_tor_hidden_service(key_blob):
@@ -2216,8 +2230,7 @@ def initialize_app():
         if secret_word:
                 if secret_word == 'changeme': logger.warning("Default secret word remains unchanged. Change it soon.")
                 logger.info("Using secret word from %s to derive passphrase.", secret_file_path)
-                passphrase_words = get_passphrase(onion_dir, secret_word)
-                passphrase = " ".join(passphrase_words)
+                passphrase = get_passphrase(secret_word)
                 logger.info("-" * (len(passphrase)+ 22) )
                 logger.info('--- Passphrase: "%s" ---', passphrase)
                 logger.info("-" * (len(passphrase)+ 22) )
