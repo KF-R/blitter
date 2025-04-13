@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.7'
+APP_VERSION = '0.3.8'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -802,7 +802,7 @@ LOGIN_TEMPLATE = """
         <form method="post">
         <div class="form-group">
             <label for="passphrase">Passphrase:</label>
-            <input type="password" name="passphrase" value=""><br>
+            <input type="password" name="passphrase" value="" autofocus><br>
             <input type="submit" value="Login">
         </div>
         </form>
@@ -1154,6 +1154,10 @@ VIEW_BLATS_TEMPLATE = """
     </div>
     <hr/>
     <div class="content">
+        <div class="blats-table-nav" style="margin-bottom:20px;">
+            <span class="blat-filters">[ <a href="/view_blats">All</a> ]  [ <a href="/view_blats?filter=inbox">Inbox</a> ]  [ <a href="/view_blats?filter=sent">Sent</a> ]  [ <a href="/view_blats?filter=outbox">Outbox</a> ]</span>
+            <span style="margin-left:60px;">{{ utc_time }}</span>
+        </div>
         <table>
             <thead>
                 <tr>
@@ -1637,10 +1641,28 @@ def view_blats():
     if not is_logged_in():
         return redirect(url_for('login'))
 
-
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
-    rows = conn.execute('SELECT * FROM blats').fetchall()
+
+    filter = request.args.get('filter', default=None, type=str)
+    if filter:
+        if filter == 'inbox':
+            rows = conn.execute('SELECT * FROM blats WHERE recipient = ?', (SITE_NAME, )).fetchall()
+        elif filter == 'sent':
+            rows = conn.execute(
+                'SELECT * FROM blats WHERE sender = ? AND substr(flags, -1) = ?',
+                (SITE_NAME, '1')
+            ).fetchall()
+        elif filter == 'outbox':
+            rows = conn.execute(
+                'SELECT * FROM blats WHERE sender = ? AND substr(flags, -1) = ?',
+                (SITE_NAME, '0')
+            ).fetchall()
+        else:
+            rows = conn.execute('SELECT * FROM blats').fetchall()
+    else:
+        rows = conn.execute('SELECT * FROM blats').fetchall()
+
     conn.close()
 
     subs = get_all_subscriptions()
@@ -1658,6 +1680,7 @@ def view_blats():
         elif row_dict['recipient'] in nickname_map:
             row_dict['recipient_nick'] = nickname_map[row_dict['recipient']]
 
+        # TODO: Add 'retry' to undelivered blats in outbox
         if row_dict['sender'] == SITE_NAME:
             row_dict['sender'] = local_nickname
             row_dict['flags'] = 'Undelivered' if row_dict['flags'] == '0' * 16 else 'Delivered'
@@ -1672,6 +1695,7 @@ def view_blats():
     return render_template_string(
         VIEW_BLATS_TEMPLATE,
         css_base=CSS_BASE,
+        utc_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
         header_section=common['header_section'],
         footer_section=common['footer_section'],
         site_name=common['site_name'],
