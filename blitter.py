@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.11'
+APP_VERSION = '0.3.12'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -298,6 +298,17 @@ def get_combined_feed():
             local_profile = get_local_profile()
             post['nickname'] = local_profile.get('nickname', 'User')
     return posts
+
+def get_unread_blat_count():
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        'SELECT * FROM blats WHERE recipient = ? AND substr(flags, -1) = ?',
+        (SITE_NAME, '0')
+    ).fetchall()
+    conn.close()
+
+    return len(rows)
 
 # --- Helper Functions ---
 
@@ -732,6 +743,8 @@ CSS_BASE = """
         .site-info { margin-left: 10px; font-size: 0.9em; }
         .nickname { font-family: 'Courier New', Courier, monospace; color: #ff9900; }
         .subscription-site-name { font-weight: bold; color: #aaa; }
+        .subscriptions-header-div { margin-bottom: 10px;}
+        .subscriptions-header { margin-left: 20px; font-size: 1.4em; }
     </style>
 
 """
@@ -1022,11 +1035,14 @@ INDEX_TEMPLATE = """
 """
 
 SUBSCRIPTIONS_TEMPLATE = """
-<div class="subscriptions-header">
-    Bleet Timeline 
-    <span style="font-size: 0.6em; margin-left:20px;">{{ utc_time }}</span>
+<div class="subscriptions-header-div">
+    <span style="font-size: 1.5em; color: #ffcc00; font-weight: bold;">Bleet Timeline</span>
+    <span class="subscriptions-header" style="font-size: 0.8em;">{{ utc_time }}</span>
     {% if logged_in %}
-    <span style="margin-left:40px;"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
+        <span class="subscriptions-header"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
+        {% if unread_blat_count > 0 %}
+        <span class="subscriptions-header">🐐 {{ unread_blat_count }}</span>
+        {% endif %}
     {% endif %}
 </div>
 {% for post in combined_feed %}
@@ -2055,6 +2071,12 @@ def subscriptions_panel():
     common = get_common_context()
     utc_now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     subscriptions = get_all_subscriptions()
+
+    if is_logged_in():
+        unread_blat_count = get_unread_blat_count()
+    else:
+        unread_blat_count = 0
+
     return render_template_string(
         SUBSCRIPTIONS_TEMPLATE,
         utc_time=utc_now,
@@ -2062,6 +2084,7 @@ def subscriptions_panel():
         subscriptions=subscriptions,
         logged_in=common['logged_in'],
         profile=common['profile'],
+        unread_blat_count=unread_blat_count,
         bmd2html=bmd2html,
         null_reply_address=NULL_REPLY_ADDRESS,
         site_name=SITE_NAME
@@ -2107,7 +2130,7 @@ def rx_blat():
     except Exception as e:
         logger.error("Error during decryption for blat from %s: %s", sender, e)
         abort(500)
-    logger.info(f"Blat received from {sender}:\n\n{plaintext}\n\n")
+    logger.info(f"New blat received from {sender}.")
     recorded = insert_blat(SITE_NAME, sender, timestamp, subject, content, flags)
     if not recorded:
         logger.error("Failed to add received blat (%s) to database.", f"sender:timestamp")
