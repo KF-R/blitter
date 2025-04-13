@@ -1036,7 +1036,7 @@ INDEX_TEMPLATE = """
 
 SUBSCRIPTIONS_TEMPLATE = """
 <div class="subscriptions-header-div">
-    <span style="font-size: 1.5em; color: #ffcc00; font-weight: bold;">Bleet Timeline</span>
+    <span style="font-size: 1.5em; color: #ff9900; font-weight: bold;">Bleet Timeline</span>
     <span class="subscriptions-header" style="font-size: 0.8em;">{{ utc_time }}</span>
     {% if logged_in %}
         <span class="subscriptions-header"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
