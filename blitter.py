@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.12'
+APP_VERSION = '0.3.15'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -13,7 +13,6 @@ import string
 import requests
 import concurrent.futures
 import threading
-import shutil
 import sqlite3
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort, send_from_directory
 import html
@@ -38,6 +37,7 @@ try:
     import stem.util.log
     stem.util.log.get_logger().setLevel(logging.ERROR)
 except ImportError:
+    logger.warning(f"Note that stem (TOR) logging will pass its warnings as errors.")
     pass
 
 # --- Tor Integration Imports ---
@@ -745,8 +745,20 @@ CSS_BASE = """
         .subscription-site-name { font-weight: bold; color: #aaa; }
         .subscriptions-header-div { margin-bottom: 10px;}
         .subscriptions-header { margin-left: 20px; font-size: 1.4em; }
+        input[type=submit], button {
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        input[type=submit]:hover, button:hover {
+            background-color: #666;
+        }
+        input[type=submit]:active, button:active {
+            transform: scale(0.95);
+        }
+        .blats-table-nav { margin-bottom: 5px; }
+        .blat-filters { margin-left: 40px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
     </style>
-
 """
 
 JS_FORM = """
@@ -876,13 +888,13 @@ INDEX_TEMPLATE = """
             <h2><span class="nickname">{{ profile.nickname if profile else 'User' }}</span> Feed</h2>
             {% if profile and profile.location %}
                 <span class="site-info">Location: <em>{{ profile.location }}</em></span>
-                <br/>
+                <br>
             {% endif %}
             {% if profile and profile.description %}
                 <span class="site-info">Bio: {{ bmd2html(profile.description) | safe }}</span>
-                <br/>
+                <br>
             {% endif %}
-            <hr/>
+            <hr>
              <div id="status-message"></div>
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
@@ -891,7 +903,7 @@ INDEX_TEMPLATE = """
                 <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
                 <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
             </form>
-            <hr/>
+            <hr>
             {% endif %}
             {% for post in user_feed %}
             <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
@@ -916,10 +928,10 @@ INDEX_TEMPLATE = """
         {{ footer_section|safe }}
     </div>
 
-    <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:460px;">
+    <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:440px;">
       <form method="post" action="{{ url_for('add_subscription') }}">
-        <label for="onion_address" style="color:#eee;">Enter .onion address:</label><br>
-        <input type="text" name="onion_address" id="onion_address" required pattern="^(https?:\\/\\/)?[a-z2-7]{56}(?:\\.onion)?\\/?$" title="Enter a valid v3 Onion address (56 characters, optionally starting with http:// or https://, optionally ending with .onion, and optionally a trailing slash)" style="width: 440px;">
+        <label for="onion_address" style="color:#eee;">Enter .onion address:</label><br><br>
+        <input type="text" name="onion_address" id="onion_address" required pattern="^(https?:\\/\\/)?[a-z2-7]{56}(?:\\.onion)?\\/?$" title="Enter a valid v3 Onion address (56 characters, optionally starting with http:// or https://, optionally ending with .onion, and optionally a trailing slash)" style="width: 420px;">
         <br><br>
         <input type="submit" value="Add Subscription">
         <button type="button" onclick="document.getElementById('add-subscription-modal').style.display='none';">Cancel</button>
@@ -939,6 +951,8 @@ INDEX_TEMPLATE = """
       {% if logged_in %}
         document.getElementById("add-subscription-btn").addEventListener("click", function() {
           document.getElementById("add-subscription-modal").style.display = "block";
+          onion_input = document.getElementById("onion_address");
+          setTimeout(() => onion_input.focus(), 0);
         });
 
         document.getElementById("fetch-subscriptions-btn").addEventListener("click", function() {
@@ -1106,9 +1120,11 @@ HEADER_TEMPLATE = """
         </span>
         <span class="controls">
             {% if logged_in %}
+                {% if request.endpoint == 'index' %}
+                    <button id="fetch-subscriptions-btn" title="Fetch subscriptions">Fetch</button> |
+                    <button id="add-subscription-btn" title="Add subscription">Add</button> |
+                {% endif %}
                 <a href="{{ url_for('profile') }}">Profile</a> |
-                <button id="fetch-subscriptions-btn" title="Fetch subscriptions">Fetch</button> |
-                <button id="add-subscription-btn" title="Add subscription">Add</button> |
                 <a href="{{ url_for('logout') }}">Logout</a>
             {% else %}
                 {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
@@ -1134,55 +1150,38 @@ VIEW_BLATS_TEMPLATE = """
 <html>
 <head>
     <title>Blats View for {{ site_name }}</title>
-    <style>
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-    </style>
 {{ css_base|safe }}
 </head>
 <body>
     <div class="header">
-        <span class="logo">
-            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
-            Blitter
-        </span>
-        <span class="controls">
-            <a href="{{ url_for('profile') }}">Profile</a> |
-            <a href="{{ url_for('logout') }}">Logout</a>
-        </span>
-        <div class="site-name">
-            {{ ('<a href="http://' ~ site_name ~ '.onion">' ~ profile.nickname ~ '</a>') | safe }}:
-            <span id="site-name">{{ site_name }}</span>
-            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
-        </div>
+        {{ header_section|safe}}
     </div>
-    <hr/>
-    <div class="blats-table-nav" style="margin-bottom:20px;">
+    <hr>
+    <div class="blats-table-nav">
         <span class="blat-filters">[ <a href="/view_blats">All</a> ]  [ <a href="/view_blats?filter=inbox">Inbox</a> ]  [ <a href="/view_blats?filter=sent">Sent</a> ]  [ <a href="/view_blats?filter=outbox">Outbox</a> ]</span>
-        <span style="margin-left:60px;">{{ utc_time }}</span>
+        <span class="blat-filters">{{ utc_time }}</span>
     </div>
-    <hr/>
+    <hr>
     {% if retry_result %}
     <div class="retry-result">
         <p>
         <span>{{ retry_result }}</span>
         </p>
     </div>
-    <hr/>
+    <hr>
     {% endif %}
     <div class="content">
         <table>
             <thead>
                 <tr>
                     {% if rows|length > 0 %}
-                    <th>recipient</th>
-                    <th>sender</th>
-                    <th>timestamp</th>
-                    <th>subject</th>
-                    <th>content</th>
-                    <th>Delivered/Read</th>
+                    <th>Recipient</th>
+                    <th>Sender</th>
+                    <th>Timestamp</th>
+                    <th>Subject</th>
+                    <th>Status</th>
                     {% else %}
-                    <th>No Data</th>
+                    <th>No blats yet. Go blat someone. Or, better yet, get blatted.</th>
                     {% endif %}
                 </tr>
             </thead>
@@ -1193,7 +1192,6 @@ VIEW_BLATS_TEMPLATE = """
                     <td>{{ (('<span class="nickname">' ~ blat.sender_nick ~ ':</span> ') if blat.sender_nick else '') | safe }}{{ blat.sender }}</td>
                     <td>{{ blat.display_timestamp }}</td>
                     <td>{{ blat.subject }}</td>
-                    <td>{{ blat.content }}</td>
                     <td>
                         {% if blat.flags == 'Retry' %}
                             <a href="/view_blats?filter=outbox&retry={{ blat.timestamp }}">{{ blat.flags }}</a>
@@ -1204,7 +1202,7 @@ VIEW_BLATS_TEMPLATE = """
                 </tr>
                 {% else %}
                     <tr>
-                        <td colspan="6">No records found.</td>
+                        <td colspan="5">No records found.</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -1226,29 +1224,9 @@ VIEW_THREAD_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <span class="logo">
-            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
-            Blitter
-        </span>
-        <span class="controls">
-            {% if logged_in %}
-                <a href="{{ url_for('profile') }}">Profile</a> |
-                <a href="{{ url_for('logout') }}">Logout</a>
-            {% else %}
-                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
-            {% endif %}
-        </span>
-        <div class="site-name">
-            {% if onion_address %}
-                    {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
-            {% else %}
-                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
-            {% endif %}
-            <span id="site-name">{{ onion_address or site_name }}</span>
-            <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
-        </div>
+        {{ header_section|safe}}
     </div>
-    <hr/>
+    <hr>
     <div class="content">
         <div class="thread-view">
             {% if parent_post is string %}
@@ -1277,7 +1255,7 @@ VIEW_THREAD_TEMPLATE = """
                     <div class="post-content">{{ bmd2html(parent_post.display_content) | safe }}</div>
                 </div>
             {% endif %}
-            <hr/>
+            <hr>
             <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}"{% if selected_post.reply_id != null_reply_address %} style="margin-left:50px;"{% endif %}>
                 <div class="post-meta">
                     {% if selected_post.site == site_name %}
@@ -1297,9 +1275,9 @@ VIEW_THREAD_TEMPLATE = """
                 </div>
                 <div class="post-content">{{ bmd2html(selected_post.display_content) | safe }}</div>
             </div>
-            <hr/>
+            <hr>
             {{ thread_section|safe }}
-            <hr/>
+            <hr>
             {% if logged_in %}
             <form method="post" action="{{ url_for('post') }}">
                 <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
@@ -1308,7 +1286,7 @@ VIEW_THREAD_TEMPLATE = """
                 <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
                 <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
             </form>
-            <hr/>
+            <hr>
             {% endif %}
         </div>
     </div>
@@ -1345,31 +1323,35 @@ BLAT_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <span class="logo">
-            <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
-            Blitter
-        </span>
-        <span class="controls">
-            {% if logged_in %}
-                <a href="{{ url_for('profile') }}">Profile</a> |
-                <a href="{{ url_for('logout') }}">Logout</a>
-            {% else %}
-                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
-            {% endif %}
-        </span>
-        <div class="site-name">
-            {% if onion_address %}
-                    {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
-            {% else %}
-                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
-            {% endif %}
-            <span id="site-name">{{ onion_address or site_name }}</span>
-        </div>
+        {{ header_section|safe}}
     </div>
-    <hr/>
+    <hr>
+    {% if rows|length > 0 %}
+        <div class="content">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Timestamp</th>
+                        <th>Subject</th>
+                        <th>Content</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for blat in rows %}
+                    <tr>
+                        <td>{{ blat.status }}
+                        <td>{{ blat.display_timestamp }}</td>
+                        <td>{{ blat.subject }}</td>
+                        <td>{{ blat.content }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <hr>
+    {% endif %}
     <div class="content">
-        <hr/>
-        {% if logged_in %}
         <form method="post" action="{{ url_for('send_blat') }}">
             <label for="blat_recipient">Blat @:</label>
             <input type="text" name="blat_recipient" value="{{ blat_recipient }}" readonly title="You are sending an encrypted direct message to this blitter user." size="70">
@@ -1380,17 +1362,12 @@ BLAT_TEMPLATE = """
             <input type="submit" value="Post" style="margin: 5px;">
             <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
         </form>
-        <hr/>
-        {% else %}
-        <h2>Log in to blat people</h2>
-        {% endif %}
+        <hr>
     </div>
     <div class="footer">
         {{ footer_section|safe }}
     </div>
-{% if logged_in %}
 {{ js_form|safe }}
-{% endif %}
 
 </body>
 </html>
@@ -1733,16 +1710,53 @@ def view_blats():
 
 @app.route('/blat/<string:blat_recipient>')
 def blat(blat_recipient):
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    # Prepare blat history with this recipient
+    with get_db_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            'SELECT * FROM blats WHERE sender = ? OR recipient = ?',
+            (blat_recipient, blat_recipient)
+        ).fetchall()
+
+    subs = get_all_subscriptions()
+    nickname_map = {sub['site']: sub['nickname'] for sub in subs}
+    local_profile = get_local_profile()
+    local_nickname = local_profile.get('nickname', 'You')
+
+    parsed_rows = []
+    for row in reversed(rows):
+        row_dict = dict(row)  # make a mutable copy
+
+        if row_dict['recipient'] == SITE_NAME:
+            row_dict['status'] = 'Read'
+            # TODO: If unread, mark as new and update DB flags to show it was read
+            # row_dict['flags'] = 'Unread' if row_dict['flags'][-1] == '0' else 'Read'
+            row_dict['sender_nick'] = nickname_map[row_dict['sender']]
+        else:
+            row_dict['status'] = f'Delivered to {nickname_map[row_dict['recipient']]}'
+
+        row_dict['display_timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
+
+        parsed_rows.append(row_dict)
+
+
     common = get_common_context()
     return render_template_string(
         BLAT_TEMPLATE, 
-        css_base=CSS_BASE, js_form=render_template_string(JS_FORM, MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32),
-        logged_in=common['logged_in'],
+        css_base=CSS_BASE, 
+        js_form=render_template_string(JS_FORM, MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32),
+        utc_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
+        header_section=common['header_section'],
+        footer_section=common['footer_section'],
         profile=common['profile'],
         onion_address=onion_address,
         blat_recipient=blat_recipient,
         site_name=SITE_NAME,
-        MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32) 
+        MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32,
+        rows=parsed_rows) 
 
 def deliver_blat(recipient, timestamp, subject, content, flags):
     """Post blat directly to recipient's /rx_blat endpoint using X25519 key exchange."""
