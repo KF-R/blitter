@@ -215,14 +215,14 @@ Add other **Blitter** `.onion` sites as subscriptions:
 
 ## 👤 Who Should Use This?
 
-- Journalists.
-- Whistleblowers.
-- Dissenters.
-- Organisers.
-- Democracy defenders.
-- "Annexation" defenders.
-- Nerds with taste.
-- You.
+- Journalists
+- Whistleblowers
+- Dissenters
+- Organisers
+- Democracy defenders
+- "Annexation" defenders
+- Nerds with taste
+- You
 
 ---
 
