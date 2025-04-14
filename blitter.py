@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.15'
+APP_VERSION = '0.3.17'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -701,7 +701,10 @@ CSS_BASE = """
         .header, .footer { background-color: #333; padding: 10px; overflow: hidden; }
         .header .logo { float: left; font-weight: bold; display: flex; align-items: center; }
         .header .site-name { text-align: center; font-size: 1.1em; margin: 0 180px; line-height: 1.5em; }
-        .header .controls { float: right; }
+        .header .controls { 
+            float: right; display: inline-block;  
+            min-height: 32; line-height: 32px; vertical-align: middle;
+        }
         .content { display: flex; flex-wrap: wrap; padding: 10px; }
         .feed-panel { flex: 1; min-width: 200px; margin-right: 10px; margin-bottom: 10px; }
         .subscriptions-panel { flex: 2; min-width: 400px; background-color: #333; padding: 10px; border-radius: 5px; max-height: 80vh; overflow-y: auto;}
@@ -754,10 +757,11 @@ CSS_BASE = """
         input[type=submit]:active, button:active {
             transform: scale(0.95);
         }
-        .blats-table-nav { margin-bottom: 5px; }
-        .blat-filters { margin-left: 40px; }
-        table { border-collapse: collapse; width: 100%; }
+        .blats-table-nav { margin: 5px auto; width: fit-content; }
+        .blat-filters { margin-left: 20px; }
+        table { border-collapse: collapse; width: 50%; }
         th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        .profile-display { width: fit-content; margin: 0 auto; }
     </style>
 """
 
@@ -832,6 +836,10 @@ PROFILE_TEMPLATE = """
 {{ css_base|safe }}
 </head>
 <body>
+    <div class="header">
+{{ header_section|safe}}
+    </div>
+    {% if logged_in %}
     <div class="form-container">
         <h2>Profile</h2>
     <div class="form-links">
@@ -861,6 +869,20 @@ PROFILE_TEMPLATE = """
         <input type="submit" value="Update Profile">
     </form>
     </div>
+    {% else %}
+    <div class='profile-display'>
+        <table style="margin: 10px; width=640px;">
+            <tr><td>Nickname:</td><td>{{ profile.nickname }}</td></tr>
+            <tr><td>Location:</td><td>{{ profile.location }}</td></tr>
+            <tr><td>Description:</td><td>{{ profile.description }}</td></tr>
+            <tr><td>Email:</td><td>{{ profile.email }}</td></tr>
+            <tr><td>Website:</td><td>{{ profile.website }}</td></tr>
+        </table>
+    </div>
+    {% endif %}
+    <div class="footer">
+{{ footer_section|safe }}
+    </div>  
 </body>
 </html>
 """
@@ -874,7 +896,7 @@ INDEX_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        {{ header_section|safe}}
+{{ header_section|safe}}
     </div>
 
     {% if site_name == 'tor_setup_pending' and onion_address == None %}
@@ -925,7 +947,7 @@ INDEX_TEMPLATE = """
     </div>
 
     <div class="footer">
-        {{ footer_section|safe }}
+{{ footer_section|safe }}
     </div>
 
     <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:440px;">
@@ -1063,13 +1085,13 @@ SUBSCRIPTIONS_TEMPLATE = """
 <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
     <div class="post-meta">
         {% if post.site == site_name %}
-            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}</span>: 
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
             | <a href="{{ url_for('view_bleet', timestamp=post.timestamp) }}" title="View raw bleet">Raw</a>
         {% else %}
             {% if post.nickname %}
-                <span class="nickname">{{ post.nickname }}: </span>
+                <span class="nickname">{{ post.nickname }}</span>: 
             {% endif %}
             <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
             {{ post.display_timestamp }}
@@ -1099,7 +1121,7 @@ SUBSCRIPTIONS_TEMPLATE = """
     {% for sub in subscriptions %}
         <li>
            {% if sub.nickname %}
-               <span class="nickname">{{ sub.nickname }}: </span>
+               <span class="nickname">{{ sub.nickname }}</span>: 
            {% endif %}
            <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
            {% if logged_in %}
@@ -1118,23 +1140,25 @@ HEADER_TEMPLATE = """
             <img src="{{ url_for('static', filename='logo_128.png') }}" height="32" width="32" style="margin-right:10px;"/>
             Blitter
         </span>
-        <span class="controls">
+        <span class="controls">|
             {% if logged_in %}
                 {% if request.endpoint == 'index' %}
                     <button id="fetch-subscriptions-btn" title="Fetch subscriptions">Fetch</button> |
                     <button id="add-subscription-btn" title="Add subscription">Add</button> |
+                {% else %}
+                    <a href="/"><button>Home</button></a> |
                 {% endif %}
-                <a href="{{ url_for('profile') }}">Profile</a> |
-                <a href="{{ url_for('logout') }}">Logout</a>
+                <a href="{{ url_for('profile') }}"><button>Profile</button></a> |
+                <a href="{{ url_for('logout') }}"><button>Logout</button></a> |
             {% else %}
-                {% if profile.nickname %} <span class="nickname">{{ profile.nickname }}</span> {% endif %} <a href="{{ url_for('login') }}">login</a>
+                {% if profile.nickname %} <a href="{{ url_for('profile') }}">{{ profile.nickname }}</a> | {% endif %} <a href="{{ url_for('login') }}">login</a> |
             {% endif %}
         </span>
         <div class="site-name">
             {% if onion_address %}
                     {{ ('<a href="http://' ~ onion_address ~ '">' ~ profile.nickname ~ '</a>') | safe if profile else 'User' }}:
             {% else %}
-                <span class="nickname"> {{ profile.nickname if profile else 'User' }}:</span>
+                <span class="nickname"> {{ profile.nickname if profile else 'User' }}</span>: 
             {% endif %}
             <span id="site-name">{{ onion_address or site_name }}</span>
             <button title="Copy" onclick="navigator.clipboard.writeText(document.getElementById('site-name').innerText)" style="font-family: system-ui, sans-serif;">⧉</button>
@@ -1154,7 +1178,7 @@ VIEW_BLATS_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        {{ header_section|safe}}
+{{ header_section|safe}}
     </div>
     <hr>
     <div class="blats-table-nav">
@@ -1171,7 +1195,7 @@ VIEW_BLATS_TEMPLATE = """
     <hr>
     {% endif %}
     <div class="content">
-        <table>
+        <table style="margin: 0px auto;">
             <thead>
                 <tr>
                     {% if rows|length > 0 %}
@@ -1188,8 +1212,12 @@ VIEW_BLATS_TEMPLATE = """
             <tbody>
                 {% for blat in rows %}
                 <tr>
-                    <td>{{ (('<span class="nickname">' ~ blat.recipient_nick ~ ':</span> ') if blat.recipient_nick else '') | safe }}{{ blat.recipient }}</td>
-                    <td>{{ (('<span class="nickname">' ~ blat.sender_nick ~ ':</span> ') if blat.sender_nick else '') | safe }}{{ blat.sender }}</td>
+                    <td>
+                    {{ (('<a class="nickname" href="/blat/' ~ blat.recipient ~ '" title="' ~ blat.recipient ~ '">' ~ blat.recipient_nick ~ '</a>') if blat.recipient_nick else 'From ' ~ profile.nickname ~ '') | safe }}
+                    </td>
+                    <td>
+                    {{ (('<a class="nickname" href="/blat/' ~ blat.sender ~ '" title="' ~ blat.sender ~ '">' ~ blat.sender_nick ~ '</a>') if blat.sender_nick else 'To ' ~ profile.nickname ~ '') | safe }}
+                    </td>
                     <td>{{ blat.display_timestamp }}</td>
                     <td>{{ blat.subject }}</td>
                     <td>
@@ -1235,10 +1263,10 @@ VIEW_THREAD_TEMPLATE = """
                 <div class="post-box {% if parent_post.site == site_name %}own-post-highlight{% endif %}">
                     <div class="post-meta">
                         {% if parent_post.site == site_name %}
-                            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}</span>: 
                         {% else %}
                             {% if parent_post.nickname %}
-                                <span class="nickname">{{ parent_post.nickname }}: </span>
+                                <span class="nickname">{{ parent_post.nickname }}</span>: 
                             {% endif %}
                         {% endif %}
                         <span class="subscription-site-name">{{ parent_post.site }}.onion</span> <br>
@@ -1259,13 +1287,13 @@ VIEW_THREAD_TEMPLATE = """
             <div class="post-box {% if selected_post.site == site_name %}own-post-highlight{% endif %}"{% if selected_post.reply_id != null_reply_address %} style="margin-left:50px;"{% endif %}>
                 <div class="post-meta">
                     {% if selected_post.site == site_name %}
-                        <span class="nickname">{{ profile.nickname if profile else 'Local user' }}: </span>
+                        <span class="nickname">{{ profile.nickname if profile else 'Local user' }}</span>: 
                         <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
                         {{ selected_post.display_timestamp }}
                         | <a href="{{ url_for('view_bleet', timestamp=selected_post.timestamp) }}" title="View raw bleet">Raw</a>
                     {% else %}
                         {% if selected_post.nickname %}
-                            <span class="nickname">{{ selected_post.nickname }}: </span>
+                            <span class="nickname">{{ selected_post.nickname }}</span>: 
                         {% endif %}
                         <span class="subscription-site-name">{{ selected_post.site }}.onion</span> <br>
                         {{ selected_post.display_timestamp }}
@@ -1323,27 +1351,27 @@ BLAT_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        {{ header_section|safe}}
+{{ header_section|safe}}
     </div>
     <hr>
     {% if rows|length > 0 %}
-        <div class="content">
-            <table>
+        <div>
+            <table style="width: 90%; margin: 5px auto;">
                 <thead>
                     <tr>
-                        <th>Status</th>
                         <th>Timestamp</th>
                         <th>Subject</th>
                         <th>Content</th>
+                        <th>Status</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for blat in rows %}
                     <tr>
-                        <td>{{ blat.status }}
                         <td>{{ blat.display_timestamp }}</td>
                         <td>{{ blat.subject }}</td>
                         <td>{{ blat.content }}</td>
+                        <td>{{ blat.status }}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -1351,9 +1379,9 @@ BLAT_TEMPLATE = """
         </div>
         <hr>
     {% endif %}
-    <div class="content">
+    <div class="form-container">
         <form method="post" action="{{ url_for('send_blat') }}">
-            <label for="blat_recipient">Blat @:</label>
+            <label for="blat_recipient">Blat @<span class="nickname">{{ friend_nick }}</span>:</label><br><br>
             <input type="text" name="blat_recipient" value="{{ blat_recipient }}" readonly title="You are sending an encrypted direct message to this blitter user." size="70">
             <label for="subject">Blat Subject:</label>
             <textarea id="subject" name="subject" rows="1" placeholder="Enter the subject of your private direct message here" maxlength="80" required></textarea><br>
@@ -1365,7 +1393,7 @@ BLAT_TEMPLATE = """
         <hr>
     </div>
     <div class="footer">
-        {{ footer_section|safe }}
+{{ footer_section|safe }}
     </div>
 {{ js_form|safe }}
 
@@ -1449,10 +1477,10 @@ def about():
 
 @app.route('/profile', methods=['GET', 'POST'])
 def profile():
-    if not is_logged_in():
-        return redirect(url_for('login'))
+    logged_in = is_logged_in()
+
     local_profile = get_local_profile()
-    if request.method == 'POST':
+    if (request.method == 'POST') and logged_in:
         new_profile = {
             'nickname': request.form.get('nickname', '').strip(),
             'location': request.form.get('location', '').strip(),
@@ -1463,12 +1491,20 @@ def profile():
         update_local_profile(new_profile)
         logger.info("Local profile updated.")
         return redirect(url_for('profile'))
+
+    common = get_common_context()
     local_profile.setdefault('nickname', '')
     local_profile.setdefault('location', '')
     local_profile.setdefault('description', '')
     local_profile.setdefault('email', '')
     local_profile.setdefault('website', '')
-    return render_template_string(PROFILE_TEMPLATE, profile=local_profile, css_base=CSS_BASE)
+    return render_template_string(
+        PROFILE_TEMPLATE, 
+        profile=local_profile, 
+        css_base=CSS_BASE, 
+        header_section=common['header_section'],
+        footer_section=common['footer_section'],
+        logged_in=logged_in)
 
 @app.route('/post', methods=['POST'])
 def post():
@@ -1566,10 +1602,10 @@ def view_thread(bleet_id):
                 html += '<div class="post-box" style="margin-top:10px;">'
             html += '<div class="post-meta">'
             if child['site'] == SITE_NAME:
-                html += f'<span class="nickname">{local_profile.get("nickname", "Local user")}: </span>'
+                html += f'<span class="nickname">{local_profile.get("nickname", "Local user")}</span>: '
             else:
                 if child.get("nickname"):
-                    html += f'<span class="nickname">{child["nickname"]}: </span>'
+                    html += f'<span class="nickname">{child["nickname"]}</span>: '
             html += f'<span class="subscription-site-name">{child["site"]}.onion</span> <br>'
             html += f'{child["display_timestamp"]} '
             html += f'| <a href="{url_for("view_bleet", timestamp=child["timestamp"])}" title="View raw bleet">Raw</a> '
@@ -1713,6 +1749,13 @@ def blat(blat_recipient):
     if not is_logged_in():
         return redirect(url_for('login'))
 
+    subs = get_all_subscriptions()
+    nickname_map = {sub['site']: sub['nickname'] for sub in subs}
+    friend_nick = nickname_map[blat_recipient]
+    if not friend_nick:
+        logger.warning(f"Can not find nickname for {blat_recipient}. Blat conversation hidden.")
+        return redirect(url_for('index'))
+
     # Prepare blat history with this recipient
     with get_db_connection() as conn:
         conn.row_factory = sqlite3.Row
@@ -1721,8 +1764,6 @@ def blat(blat_recipient):
             (blat_recipient, blat_recipient)
         ).fetchall()
 
-    subs = get_all_subscriptions()
-    nickname_map = {sub['site']: sub['nickname'] for sub in subs}
     local_profile = get_local_profile()
     local_nickname = local_profile.get('nickname', 'You')
 
@@ -1731,17 +1772,30 @@ def blat(blat_recipient):
         row_dict = dict(row)  # make a mutable copy
 
         if row_dict['recipient'] == SITE_NAME:
-            row_dict['status'] = 'Read'
-            # TODO: If unread, mark as new and update DB flags to show it was read
-            # row_dict['flags'] = 'Unread' if row_dict['flags'][-1] == '0' else 'Read'
-            row_dict['sender_nick'] = nickname_map[row_dict['sender']]
+
+            if row_dict['flags'][-1] == '0':
+                row_dict['status'] = 'New'
+                # Update DB to mark blat has been read
+                with get_db_connection() as conn:
+                    conn.execute(
+                        '''
+                        UPDATE blats
+                        SET flags = substr(flags, 1, length(flags)-1) || '1'
+                        WHERE recipient = ? AND timestamp = ?
+                        ''',
+                        (SITE_NAME, row['timestamp'])
+                    )
+                    logger.info(f"Blat from '{friend_nick}' marked as read ({row['timestamp']}).")
+
+            else:
+                row_dict['status'] = 'Read'
+    
         else:
-            row_dict['status'] = f'Delivered to {nickname_map[row_dict['recipient']]}'
+            row_dict['status'] = f'Delivered to {friend_nick}'
 
         row_dict['display_timestamp'] = format_timestamp_for_display(row_dict['timestamp'])
 
         parsed_rows.append(row_dict)
-
 
     common = get_common_context()
     return render_template_string(
@@ -1754,6 +1808,7 @@ def blat(blat_recipient):
         profile=common['profile'],
         onion_address=onion_address,
         blat_recipient=blat_recipient,
+        friend_nick=friend_nick,
         site_name=SITE_NAME,
         MAX_MSG_LENGTH=MAX_MSG_LENGTH * 32,
         rows=parsed_rows) 
@@ -1791,13 +1846,15 @@ def deliver_blat(recipient, timestamp, subject, content, flags):
                 logger.info("Blat successfully delivered and acknowledged.")
                  
                  # Mark blat as delivered by setting last bit of flags to 1
-                conn = get_db_connection()
-                conn.execute(
-                    'UPDATE blats SET flags = ? WHERE sender = ? AND timestamp = ?',
-                    ('0000000000000001', SITE_NAME, timestamp)
-                )
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute(
+                        '''
+                        UPDATE blats
+                        SET flags = substr(flags, 1, length(flags)-1) || '1'
+                        WHERE sender = ? AND timestamp = ?
+                        ''',
+                        (SITE_NAME, timestamp)
+                    )
 
                 return f"Successfully delivered blat to {recipient}."
 
