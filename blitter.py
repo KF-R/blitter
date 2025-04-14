@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.17'
+APP_VERSION = '0.3.18'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -2337,7 +2337,6 @@ def initialize_app():
 
 if __name__ == '__main__':
     sys.is_exiting = False
-    initialize_app()
 
     # Optionally assign custom Flask port
     parser = argparse.ArgumentParser()
@@ -2345,6 +2344,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.port:
         FLASK_PORT = args.port
+
+    initialize_app()
 
     logger.info("--- Starting initial background fetch cycle ---")
     initial_fetch_thread = threading.Thread(target=run_fetch_cycle, daemon=True)
