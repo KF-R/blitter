@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.18'
+APP_VERSION = '0.3.19'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -2268,9 +2268,9 @@ def initialize_app():
                 local_profile = get_local_profile()
                 if not local_profile:
                      default_profile = {
-                          "nickname": SITE_NAME[:4],
+                          "nickname": SITE_NAME[:9],
                           "location": "",
-                          "description": f"Blitter profile for {SITE_NAME[:8]}...{SITE_NAME[-8:]}.onion",
+                          "description": f"Blitter profile for {SITE_NAME[:9]}...{SITE_NAME[-9:]}.onion",
                           "email": "",
                           "website": ""
                      }
