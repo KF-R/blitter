@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.21'
+APP_VERSION = '0.3.22'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -80,7 +80,9 @@ fetch_timer = None
 # --- Database Functions ---
 
 def init_db():
-    """Initializes (or upgrades) the SQLite database with two tables: profiles and posts."""
+    """
+        Initialises (or upgrades) the SQLite database with two tables: profiles and posts.
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
@@ -172,7 +174,7 @@ def get_profile(site):
 
 def upsert_subscription_profile(site, info):
     """
-    Store remote subscription profile including pubkey
+        Store remote subscription profile including pubkey
     """
     conn = get_db_connection()
     c = conn.cursor()
@@ -314,14 +316,18 @@ def get_unread_blat_count():
 # --- Helper Functions ---
 
 def escape(s):
-    """ Replacement for the escape function in the MarkupSafe module. html is built-in """
+    """
+        Replacement for the escape function in the MarkupSafe module. html is built-in 
+    """
     return html.escape(s, quote=True)
 
 def is_valid_onion_address(addr):
     return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
 
 def resource_path(relative_path):
-    """Return absolute path to resource, handling PyInstaller's _MEIPASS."""
+    """
+        Return absolute path to resource, handling PyInstaller's _MEIPASS.
+    """
     base_path = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
     return os.path.join(base_path, relative_path)
 
@@ -482,9 +488,9 @@ def normalize_onion_address(onion_input):
 
 def blitter_filter(s):
     """ 
-    Removes all characters from a string that are not either:
-    included in a pre-compiled set of emojis, or:
-    included in string.printable
+        Removes all characters from a string that are not either:
+        included in a pre-compiled set of emojis, or:
+        included in string.printable
     """
     if s is None: return None
 
@@ -513,7 +519,6 @@ def blitter_filter(s):
 
         # Note we also remove the | bars, reserved for bleet delimiters
     return "".join(re.findall(f"[{re.escape(string.printable)}{p}]+", s)).replace("|","")
-
 
 # --- Encryption utility functions ---
 
@@ -549,10 +554,10 @@ def get_blitsec():
   
 def ed25519_seed_to_x25519(ed_seed: bytes) -> bytes:
     """
-    Convert a 32-byte Ed25519 seed to an X25519 private key bytes.
-    h = SHA512(ed_seed)
-    a = h[:32] clamped with:
-        a[0] &= 248; a[31] &= 127; a[31] |= 64
+        Convert a 32-byte Ed25519 seed to an X25519 private key bytes.
+        h = SHA512(ed_seed)
+        a = h[:32] clamped with:
+            a[0] &= 248; a[31] &= 127; a[31] |= 64
     """
     h = hashlib.sha512(ed_seed).digest()
     a = bytearray(h[:32])
@@ -562,15 +567,17 @@ def ed25519_seed_to_x25519(ed_seed: bytes) -> bytes:
     return bytes(a)
 
 def get_x25519_private_key_from_seed() -> X25519PrivateKey:
-    """Obtain the X25519 private key from our stored Ed25519 seed."""
+    """
+        Obtain the X25519 private key from our stored Ed25519 seed.
+    """
     ed_seed = get_blitsec()  # 32-byte Ed25519 seed
     xpriv_bytes = ed25519_seed_to_x25519(ed_seed)
     return X25519PrivateKey.from_private_bytes(xpriv_bytes)
 
 def get_public_key_x25519() -> str:
     """
-    Compute our X25519 public key (base64-encoded) so that remote sites
-    can use it for the Diffie-Hellman exchange.
+        Compute our X25519 public key (base64-encoded) so that remote sites
+        can use it for the Diffie-Hellman exchange.
     """
     xpriv = get_x25519_private_key_from_seed()
     xpub = xpriv.public_key()
@@ -582,9 +589,9 @@ def get_public_key_x25519() -> str:
 
 def compute_shared_secret_x25519(my_seed: bytes, peer_pubkey_b64: str) -> bytes:
     """
-    Given our Ed25519 seed and the peer’s public key (base64 encoded),
-    compute the shared secret using X25519.
-    The derived secret is post-processed via SHA256.
+        Given our Ed25519 seed and the peer’s public key (base64 encoded),
+        compute the shared secret using X25519.
+        The derived secret is post-processed via SHA256.
     """
     my_private = get_x25519_private_key_from_seed()  # from our seed
     peer_pub_bytes = base64.b64decode(peer_pubkey_b64)
@@ -1254,10 +1261,10 @@ VIEW_BLATS_TEMPLATE = """
                 {% for blat in rows %}
                 <tr>
                     <td>
-                    {{ (('<a class="nickname" href="/blat/' ~ blat.recipient ~ '" title="' ~ blat.recipient ~ '">' ~ blat.recipient_nick ~ '</a>') if blat.recipient_nick else 'From ' ~ profile.nickname ~ '') | safe }}
+                    {{ (('<a class="nickname" href="/blat/' ~ blat.recipient ~ '" title="' ~ blat.recipient ~ '">' ~ blat.recipient_nick ~ '</a>') if blat.recipient_nick else 'To: ' ~ profile.nickname ~ '') | safe }}
                     </td>
                     <td>
-                    {{ (('<a class="nickname" href="/blat/' ~ blat.sender ~ '" title="' ~ blat.sender ~ '">' ~ blat.sender_nick ~ '</a>') if blat.sender_nick else 'To ' ~ profile.nickname ~ '') | safe }}
+                    {{ (('<a class="nickname" href="/blat/' ~ blat.sender ~ '" title="' ~ blat.sender ~ '">' ~ blat.sender_nick ~ '</a>') if blat.sender_nick else 'From: ' ~ profile.nickname ~ '') | safe }}
                     </td>
                     <td>{{ blat.display_timestamp }}</td>
                     <td>{{ blat.subject }}</td>
@@ -1854,7 +1861,9 @@ def blat(blat_recipient):
         rows=parsed_rows) 
 
 def deliver_blat(recipient, timestamp, subject, content, flags):
-    """Post blat directly to recipient's /rx_blat endpoint using X25519 key exchange."""
+    """
+        Post blat directly to recipient's /rx_blat endpoint using X25519 key exchange.
+    """
     logger.info("Attempting to deliver blat to: %s", recipient)
     # Look up the recipient's stored public key (from the subscription profile)
     remote_profile = get_profile(recipient)
@@ -2203,7 +2212,9 @@ def subscriptions_panel():
 
 @app.route('/rx_blat', methods=['POST'])
 def rx_blat():
-    """Receive encrypted blat from another user using X25519 key exchange."""
+    """
+        Receive encrypted blat from another user using X25519 key exchange.
+    """
     data = request.get_json()
     recipient = data.get('recipient')
     sender = data.get('sender')
@@ -2295,7 +2306,7 @@ def initialize_app():
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
 
-        # Initialize the SQLite database
+        # Initialise the SQLite database
         DB_FILE = f"{onion_dir[-62:-6]}.db"
         init_db()
 
