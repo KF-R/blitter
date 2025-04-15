@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.20'
+APP_VERSION = '0.3.21'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -120,6 +120,7 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+    logger.info(f"Database {DB_FILE} initialised.")
 
 def get_db_connection():
     return sqlite3.connect(DB_FILE)
@@ -479,6 +480,41 @@ def normalize_onion_address(onion_input):
         onion_input += '.onion'
     return onion_input, dir_name
 
+def blitter_filter(s):
+    """ 
+    Removes all characters from a string that are not either:
+    included in a pre-compiled set of emojis, or:
+    included in string.printable
+    """
+    if s is None: return None
+
+    E = [(0x23,0x23),(0x2A,0x2A),(0x30,0x39),(0xA9,0xA9),(0xAE,0xAE),(0x203C,0x203C),(0x2049,0x2049),(0x2122,0x2122),(0x2139,0x2139),
+         (0x2194,0x2199),(0x21A9,0x21AA),(0x231A,0x231B),(0x2328,0x2328),(0x23CF,0x23CF),(0x23E9,0x23F3),(0x23F8,0x23FA),(0x24C2,0x24C2),
+         (0x25AA,0x25AB),(0x25B6,0x25B6),(0x25C0,0x25C0),(0x25FB,0x25FE),(0x2600,0x2604),(0x260E,0x260E),(0x2611,0x2611),(0x2614,0x2615),
+         (0x2618,0x2618),(0x261D,0x261D),(0x2620,0x2620),(0x2622,0x2623),(0x2626,0x2626),(0x262A,0x262A),(0x262E,0x262F),(0x2638,0x263A),
+         (0x2640,0x2640),(0x2642,0x2642),(0x2648,0x2653),(0x265F,0x2660),(0x2663,0x2663),(0x2665,0x2666),(0x2668,0x2668),(0x267B,0x267B),
+         (0x267E,0x267F),(0x2692,0x2697),(0x2699,0x2699),(0x269B,0x269C),(0x26A0,0x26A1),(0x26A7,0x26A7),(0x26AA,0x26AB),(0x26B0,0x26B1),
+         (0x26BD,0x26BE),(0x26C4,0x26C5),(0x26C8,0x26C8),(0x26CE,0x26CF),(0x26D1,0x26D1),(0x26D3,0x26D4),(0x26E9,0x26EA),(0x26F0,0x26F5),
+         (0x26F7,0x26FA),(0x26FD,0x26FD),(0x2702,0x2702),(0x2705,0x2705),(0x2708,0x270D),(0x270F,0x270F),(0x2712,0x2712),(0x2714,0x2714),
+         (0x2716,0x2716),(0x271D,0x271D),(0x2721,0x2721),(0x2728,0x2728),(0x2733,0x2734),(0x2744,0x2744),(0x2747,0x2747),(0x274C,0x274C),
+         (0x274E,0x274E),(0x2753,0x2755),(0x2757,0x2757),(0x2763,0x2764),(0x2795,0x2797),(0x27A1,0x27A1),(0x27B0,0x27B0),(0x27BF,0x27BF),
+         (0x2934,0x2935),(0x2B05,0x2B07),(0x2B1B,0x2B1C),(0x2B50,0x2B50),(0x2B55,0x2B55),(0x3030,0x3030),(0x303D,0x303D),
+         (0x3297,0x3297),(0x3299,0x3299),(0x1F004,0x1F004),(0x1F0CF,0x1F0CF),(0x1F170,0x1F171),(0x1F17E,0x1F17F),(0x1F18E,0x1F18E),
+         (0x1F191,0x1F19A),(0x1F1E6,0x1F1FF),(0x1F201,0x1F202),(0x1F21A,0x1F21A),(0x1F22F,0x1F22F),(0x1F232,0x1F23A),(0x1F250,0x1F251),
+         (0x1F300,0x1F321),(0x1F324,0x1F393),(0x1F396,0x1F397),(0x1F399,0x1F39B),(0x1F39E,0x1F3F0),(0x1F3F3,0x1F3F5),(0x1F3F7,0x1F3FA),
+         (0x1F400,0x1F4FD),(0x1F4FF,0x1F53D),(0x1F549,0x1F54E),(0x1F550,0x1F567),(0x1F56F,0x1F570),(0x1F573,0x1F57A),(0x1F587,0x1F587),
+         (0x1F58A,0x1F58D),(0x1F590,0x1F590),(0x1F595,0x1F596),(0x1F5A4,0x1F5A5),(0x1F5A8,0x1F5A8),(0x1F5B1,0x1F5B2),(0x1F5BC,0x1F5BC),
+         (0x1F5C2,0x1F5C4),(0x1F5D1,0x1F5D3),(0x1F5DC,0x1F5DE),(0x1F5E1,0x1F5E1),(0x1F5E3,0x1F5E3),(0x1F5E8,0x1F5E8),(0x1F5EF,0x1F5EF),
+         (0x1F5F3,0x1F5F3),(0x1F5FA,0x1F64F),(0x1F680,0x1F6C5),(0x1F6CB,0x1F6D2),(0x1F6D5,0x1F6D7),(0x1F6DC,0x1F6E5),(0x1F6E9,0x1F6E9),
+         (0x1F6EB,0x1F6EC),(0x1F6F0,0x1F6F0),(0x1F6F3,0x1F6FC),(0x1F7E0,0x1F7EB),(0x1F7F0,0x1F7F0),(0x1F90C,0x1F93A),(0x1F93C,0x1F945),
+         (0x1F947,0x1F9AF),(0x1F9B4,0x1F9FF),(0x1FA70,0x1FA7C),(0x1FA80,0x1FA89),(0x1FA8F,0x1FAC6),(0x1FACE,0x1FADC),(0x1FADF,0x1FAE9),
+         (0x1FAF0,0x1FAF8)]
+    p = "".join(f"\\U{e[0]:08X}-\\U{e[1]:08X}" if e[0]>0xFFFF else f"\\u{e[0]:04X}-\\u{e[1]:04X}" for e in E)
+
+        # Note we also remove the | bars, reserved for bleet delimiters
+    return "".join(re.findall(f"[{re.escape(string.printable)}{p}]+", s)).replace("|","")
+
+
 # --- Encryption utility functions ---
 
 def encrypt(shared_secret, plaintext):
@@ -573,7 +609,7 @@ def find_first_onion_service_dir(keys_dir):
         if os.path.isdir(service_dir) and os.path.isfile(key_file):
             logger.info("Found key directory: %s", service_dir)
             return service_dir
-    logger.info("No suitable key directories found in '%s'.", keys_dir)
+    logger.warning("No suitable key directories found in '%s'.", keys_dir)
     return None
 
 def get_key_blob():
@@ -1076,68 +1112,68 @@ INDEX_TEMPLATE = """
 """
 
 SUBSCRIPTIONS_TEMPLATE = """
-<div class="subscriptions-header-div">
-    <span style="font-size: 1.5em; color: #ff9900; font-weight: bold;">Bleet Timeline</span>
-    <span class="subscriptions-header" style="font-size: 0.8em;">{{ utc_time }}</span>
-    {% if logged_in %}
-        <span class="subscriptions-header"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
-        {% if unread_blat_count > 0 %}
-        <span class="subscriptions-header">🐐 {{ unread_blat_count }}</span>
-        {% endif %}
-    {% endif %}
-</div>
-{% for post in combined_feed %}
-<div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
-    <div class="post-meta">
-        {% if post.site == site_name %}
-            <span class="nickname">{{ profile.nickname if profile else 'Local user' }}</span>: 
-            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
-            {{ post.display_timestamp }}
-            | <a href="{{ url_for('view_bleet', timestamp=post.timestamp) }}" title="View raw bleet">Raw</a>
-        {% else %}
-            {% if post.nickname %}
-                <span class="nickname">{{ post.nickname }}</span>: 
+    <div class="subscriptions-header-div">
+        <span style="font-size: 1.5em; color: #ff9900; font-weight: bold;">Bleet Timeline</span>
+        <span class="subscriptions-header" style="font-size: 0.8em;">{{ utc_time }}</span>
+        {% if logged_in %}
+            <span class="subscriptions-header"><a href="/view_blats" title="View your Blat encrypted direct messages">View Blats</a></span>
+            {% if unread_blat_count > 0 %}
+            <span class="subscriptions-header">🐐 {{ unread_blat_count }}</span>
             {% endif %}
-            <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
-            {{ post.display_timestamp }}
-            | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw bleet on originating site">Raw</a>
-        {% endif %}
-        | <a href="{{ url_for('view_thread', bleet_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
-        {% if post.reply_id != null_reply_address %}
-            <ul><li>
-                <em>In reply to:</em>
-                <a href="http://{{ post.reply_id.split(':')[0] }}.onion/thread/{{ post.reply_id }}">{{ post.reply_id }}</a>
-            </li></ul>
         {% endif %}
     </div>
-    <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
-</div>
-{% else %}
-<p>No bleets found in timeline.</p>
-{% if subscriptions %}
-<p>
-  {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
-</p>
-{% endif %}
-{% endfor %}
-<hr style="border-color: #444; margin: 20px 0;">
-<h4>Subscribed Sites:</h4>
-<ul id="subscription-list">
-    {% for sub in subscriptions %}
-        <li>
-           {% if sub.nickname %}
-               <span class="nickname">{{ sub.nickname }}</span>: 
-           {% endif %}
-           <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
-           {% if logged_in %}
-               <a href="/blat/{{ sub.site }}" class="blat-link" title="Send an encrypted private direct message to {{ sub.nickname or sub.site }}">[ Blat ]</a>
-               <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[ Remove ]</a>
-           {% endif %}
-        </li>
+    {% for post in combined_feed %}
+    <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
+        <div class="post-meta">
+            {% if post.site == site_name %}
+                <span class="nickname">{{ profile.nickname if profile else 'Local user' }}</span>: 
+                <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+                {{ post.display_timestamp }}
+                | <a href="{{ url_for('view_bleet', timestamp=post.timestamp) }}" title="View raw bleet">Raw</a>
+            {% else %}
+                {% if post.nickname %}
+                    <span class="nickname">{{ post.nickname }}</span>: 
+                {% endif %}
+                <span class="subscription-site-name">{{ post.site }}.onion</span> <br>
+                {{ post.display_timestamp }}
+                | <a href="http://{{ post.site }}.onion/{{ post.timestamp }}" target="_blank" title="View raw bleet on originating site">Raw</a>
+            {% endif %}
+            | <a href="{{ url_for('view_thread', bleet_id=post.site + ':' + post.timestamp) }}" title="View thread">Thread</a>
+            {% if post.reply_id != null_reply_address %}
+                <ul><li>
+                    <em>In reply to:</em>
+                    <a href="http://{{ post.reply_id.split(':')[0] }}.onion/thread/{{ post.reply_id }}">{{ post.reply_id }}</a>
+                </li></ul>
+            {% endif %}
+        </div>
+        <div class="post-content">{{ bmd2html(post.display_content) | safe }}</div>
+    </div>
     {% else %}
-        <li>No subscriptions added yet.</li>
+    <p>No bleets found in timeline.</p>
+    {% if subscriptions %}
+    <p>
+    {% if logged_in %} Click 'Fetch' to update subscriptions. {% else %} Login to fetch subscription updates. {% endif %}
+    </p>
+    {% endif %}
     {% endfor %}
-</ul>
+    <hr style="border-color: #444; margin: 20px 0;">
+    <h4>Subscribed Sites:</h4>
+    <ul id="subscription-list">
+        {% for sub in subscriptions %}
+            <li>
+            {% if sub.nickname %}
+                <span class="nickname">{{ sub.nickname }}</span>: 
+            {% endif %}
+            <a href="http://{{ sub.site }}.onion" target="_blank">{{ sub.site }}.onion</a>
+            {% if logged_in %}
+                <a href="/blat/{{ sub.site }}" class="blat-link" title="Send an encrypted private direct message to {{ sub.nickname or sub.site }}">[ Blat ]</a>
+                <a href="#" class="remove-link" data-site="{{ sub.site }}" title="Remove subscription for {{ sub.site }}.onion">[ Remove ]</a>
+            {% endif %}
+            </li>
+        {% else %}
+            <li>No subscriptions added yet.</li>
+        {% endfor %}
+    </ul>
 """
 
 HEADER_TEMPLATE = """
@@ -1516,8 +1552,7 @@ def post():
     if not is_logged_in():
         logger.error("Unauthorized attempt to post.")
         abort(403)
-    # Note: bars ("|") are reserved, hence stripped from all posts
-    content = request.form.get('content').replace("|","")
+    content = blitter_filter(request.form.get('content'))
     if not content or not content.strip():
          logger.info("Post rejected: Empty content.")
          return redirect(url_for('index'))
@@ -2234,7 +2269,7 @@ def is_logged_in():
     return 'logged_in' in session and session['logged_in']
 
 def initialize_app():
-    global SITE_NAME, onion_address, onion_dir, passphrase
+    global SITE_NAME, onion_address, onion_dir, passphrase, DB_FILE
     logger.info("Initializing Blitter Node v%s (Protocol: %s)...", APP_VERSION, PROTOCOL_VERSION)
     os.makedirs(KEYS_DIR, exist_ok=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2256,12 +2291,14 @@ def initialize_app():
         logger.warning("* Change default secret word soon in order to change your passphrase.  *")
         logger.warning("*"*72)
 
-    # Initialize the SQLite database
-    init_db()
-
     logger.info("--- Starting Tor Onion Service Setup ---")
     onion_dir = find_first_onion_service_dir(KEYS_DIR)
     if onion_dir:
+
+        # Initialize the SQLite database
+        DB_FILE = f"{onion_dir[-62:-6]}.db"
+        init_db()
+
         key_blob = get_key_blob()
         if key_blob:
             logger.info("Using key from: %s", onion_dir)
