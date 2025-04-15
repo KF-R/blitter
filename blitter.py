@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.22'
+APP_VERSION = '0.3.23'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
