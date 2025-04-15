@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.19'
+APP_VERSION = '0.3.20'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -45,10 +45,10 @@ try:
     from stem.control import Controller
     from stem import Signal, ProtocolError
 except ImportError:
-    logger.error("--- 'stem' library not found. ---")
+    logger.critical("--- 'stem' library not found. ---")
     logger.error(f"Check tor is installed and then install Python requirements with:\n{REQUIREMENTS_INSTALL_STRING}\n")
     logger.error("Exiting...")
-    exit()
+    sys.exit(1)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -319,11 +319,14 @@ def escape(s):
 def is_valid_onion_address(addr):
     return bool(re.fullmatch(r'[a-z2-7]{56}(?:\.onion)?', addr))
 
+def resource_path(relative_path):
+    """Return absolute path to resource, handling PyInstaller's _MEIPASS."""
+    base_path = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
+    return os.path.join(base_path, relative_path)
+
 def load_bip39_wordlist(filename='bip39_english.txt'):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    filepath = os.path.join(script_dir, filename)
-    if not os.path.exists(filepath):
-        filepath = filename
+    filepath = resource_path(filename)
+    
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             words = [line.strip() for line in f if line.strip()]
@@ -333,6 +336,8 @@ def load_bip39_wordlist(filename='bip39_english.txt'):
     except FileNotFoundError:
         logger.critical("FATAL ERROR: BIP-0039 wordlist '%s' not found in %s or current directory.", filename, script_dir)
         sys.exit(1)
+    except ValueError as e:
+        logger.critical("FATAL ERROR: %s", e)
     except Exception as e:
         logger.critical("FATAL ERROR: Failed to load BIP-0039 wordlist '%s': %s", filepath, e)
         sys.exit(1)
@@ -2287,7 +2292,7 @@ def initialize_app():
             SITE_NAME = "tor_key_error"
             onion_address = None
     else:
-        logger.error("No suitable Tor key directory found. Onion service can not be started.")
+        logger.critical("No suitable Tor key directory found. Onion service can not be started.")
         logger.warning("No keys have been created; No Blitter name (onion address) can be unlocked.")
         logger.info("Create a random key with: \n")
         logger.info("python keygen.py\n")
@@ -2299,18 +2304,18 @@ def initialize_app():
         logger.info("Keep them safe and secure!")
         logger.warning("Create a valid key and try again.\n")
         logger.error("Exiting...")
-        exit()
+        sys.exit(1)
 
     if SITE_NAME.startswith("tor_"):
         logger.error("*"*72)
-        logger.error("* ERROR: Tor setup did not complete successfully (Status: %s).", SITE_NAME)
+        logger.critical("* ERROR: Tor setup did not complete successfully (Status: %s).", SITE_NAME)
         logger.error("* Ensure Tor service is running, configured with ControlPort 9051")
         logger.error("* and a valid v3 key exists in the 'keys' directory.")
         logger.error("* Check Tor logs (usually /var/log/tor/log or similar) for details.")
         logger.error("* Check Python requirements with: \n{REQUIREMENTS_INSTALL_STRING} *")
         logger.error(f'{"*"*72}\n')
         logger.error("Exiting...")
-        exit()  
+        sys.exit(1)
 
     # Parse secret word and display passphrase
     try:
