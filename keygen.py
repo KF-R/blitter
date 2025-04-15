@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-APP_VERSION = '0.0.3'
+APP_VERSION = '0.0.4'
+"""Pyinstaller:
+pyinstaller --hidden-import=_cffi_backend keygen.py
+"""
 import nacl.bindings
 import os
 import hashlib
