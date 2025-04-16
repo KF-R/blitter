@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.25'
+APP_VERSION = '0.4.0'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -1563,23 +1563,16 @@ def logout():
 @app.route('/about')
 def about():
     local_profile = get_local_profile()
-    display_site_name = onion_address or SITE_NAME
-    if display_site_name.startswith("tor_"):
-         display_site_name = "Unknown Site (Tor Setup Issue)"
-    about_profile = []
-    if not display_site_name.startswith("Unknown"):
-        about_profile.append(f'{display_site_name}')
-    if local_profile.get("nickname"): about_profile.append(f'nickname: {local_profile["nickname"]}')
-    if local_profile.get("location"): about_profile.append(f'Loc: {local_profile["location"]}')
-    if local_profile.get("description"): about_profile.append(f'Desc: {local_profile["description"]}')
-    if local_profile.get("email"): about_profile.append(f'Email: {local_profile["email"]}')
-    if local_profile.get("website"): about_profile.append(f'Website: {local_profile["website"]}')
-    # Append our public key; if not already stored (should be set via update_local_profile)
     pubkey = local_profile.get("pubkey") or get_public_key_x25519()
-    about_profile.append(f'pubkey: {pubkey}')
-    if not about_profile:
-         return "No profile information available.", 200, {'Content-Type': 'text/plain; charset=utf-8'}
-    return "\n".join(about_profile), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    return jsonify({
+        "site": onion_address or SITE_NAME,
+        "nickname": local_profile.get("nickname", ""),
+        "location": local_profile.get("location", ""),
+        "description": local_profile.get("description", ""),
+        "email": local_profile.get("email", ""),
+        "website": local_profile.get("website", ""),
+        "pubkey": pubkey
+    })
 
 @app.route('/profile', methods=['GET', 'POST'])
 def profile():
@@ -2038,11 +2031,12 @@ def add_subscription():
     if not onion_input:
         return redirect(url_for('index'))
     if not (len(dir_name) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in dir_name)):
-         logger.error("Add subscription failed: Invalid address format for %s", onion_input)
-         return redirect(url_for('index'))
+        logger.error("Add subscription failed: Invalid address format for %s", onion_input)
+        return redirect(url_for('index'))
     if dir_name == SITE_NAME:
-         logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
-         return redirect(url_for('index'))
+        logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
+        return redirect(url_for('index'))
+
     about_info = {}
     try:
         logger.info("Attempting to fetch /about for new subscription: %s", onion_input)
@@ -2050,35 +2044,23 @@ def add_subscription():
         about_url = f"http://{onion_input}/about"
         r = requests.get(about_url, proxies=proxies, timeout=FETCH_TIMEOUT)
         r.raise_for_status()
-        about_text = r.text.strip()
-        if about_text:
-            lines = about_text.splitlines()
-            temp_info = {}
-            if lines and lines[0].strip().lower() != onion_input:
-                 logger.warning("/about first line '%s' does not match expected onion address '%s'", lines[0], onion_input)
-            # Process key/value lines 
-            for line in lines[1:]:
-                 if ":" in line:
-                     try:
-                         key, value = line.split(":", 1)
-                         key = key.strip().lower()
-                         value = value.strip()
-                         if key in ['nickname', 'loc', 'desc', 'email', 'website', 'pubkey']:
-                              if key == 'loc': key = 'location'
-                              if key == 'desc': key = 'description'
-                              temp_info[key] = value
-                     except ValueError:
-                          logger.warning("Malformed line in /about from %s: %s", onion_input, line)
-            about_info = temp_info
-            logger.info("Successfully fetched /about info for %s: %s", onion_input, about_info)
-        else:
-            logger.warning("/about for %s returned empty response.", onion_input)
+        json_data = r.json()
+
+        if json_data and json_data.get("site", "").lower() != onion_input:
+            logger.warning("/about 'site' field does not match expected onion: %s vs %s", json_data.get("site"), onion_input)
+
+        # Keep only allowed keys and sanitize
+        allowed_keys = ['nickname', 'location', 'description', 'email', 'website', 'pubkey']
+        about_info = {k: print_filter(str(v)) for k, v in json_data.items() if k in allowed_keys}
+
+        logger.info("Successfully fetched /about info for %s: %s", onion_input, about_info)
     except requests.exceptions.Timeout:
         logger.error("Error fetching /about from %s: Timeout after %s seconds", onion_input, FETCH_TIMEOUT)
     except requests.exceptions.RequestException as e:
         logger.error("Error fetching /about from %s: %s", onion_input, e)
     except Exception as e:
         logger.error("Unexpected error fetching /about from %s: %s", onion_input, e)
+
     upsert_subscription_profile(dir_name, about_info)
     logger.info("Subscription profile for %s upserted into database.", onion_input)
     logger.info("Submitting initial fetch task for new subscription %s", dir_name)
