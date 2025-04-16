@@ -44,7 +44,7 @@ Blitter is:
 
 ---
 
-## ⚙️ Install & Run (Quickstart)
+## ⚙️ Install & Run
 
 ### Requirements:
 
