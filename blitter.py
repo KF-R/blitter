@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.3.23'
+APP_VERSION = '0.3.25'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 import os
@@ -15,6 +15,7 @@ import concurrent.futures
 import threading
 import sqlite3
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, abort, send_from_directory
+from werkzeug.serving import WSGIRequestHandler
 import html
 import re
 import hashlib
@@ -25,12 +26,37 @@ import logging
 import argparse
 
 # --- Logging Configuration ---
+class CustomRequestHandler(WSGIRequestHandler):
+    def log(self, type, message, *args):
+        if type == 'info' and args:
+            try:
+                # Safely format the message using args
+                full_msg = message % args  # gives: 'GET /path HTTP/1.1" 200'
+                request_line, status = full_msg.rsplit('" ', 1)
+                method, path, _ = request_line.strip('"').split()
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"{timestamp} [REQ] {method} {path} {status}\033[0m")
+            except Exception:
+                super().log(type, message, *args)
+        else:
+            super().log(type, message, *args)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+# Customize werkzeug log output
+log = logging.getLogger('werkzeug')
+log.handlers = []  # Clear default handlers
+log.setLevel(logging.INFO)
+log.propagate = False  # prevents double logging
+
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(message)s'))  # Minimal log format
+log.addHandler(handler)
 
 # Suppress non-error stem warnings
 try:
@@ -520,6 +546,13 @@ def blitter_filter(s):
         # Note we also remove the | bars, reserved for bleet delimiters
     return "".join(re.findall(f"[{re.escape(string.printable)}{p}]+", s)).replace("|","")
 
+def print_filter(s): 
+    """
+        Removes all characters from a string that are not
+        members of string.printable
+    """
+    return ''.join(c for c in s if c in string.printable)
+
 # --- Encryption utility functions ---
 
 def encrypt(shared_secret, plaintext):
@@ -810,6 +843,20 @@ CSS_BASE = """
         table { border-collapse: collapse; width: 50%; }
         th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
         .profile-display { width: fit-content; margin: 0 auto; }
+        .emoji-button {
+            font-size: 2rem;
+            background: none;
+            border: none;
+            padding: 0.5rem;
+            cursor: pointer;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+            .emoji-button:hover {
+            background-color: #e0e0e0;
+        }
+            .emoji-button:active {
+            transform: translateY(2px);
+        }
     </style>
 """
 
@@ -1252,6 +1299,7 @@ VIEW_BLATS_TEMPLATE = """
                     <th>Timestamp</th>
                     <th>Subject</th>
                     <th>Status</th>
+                    <th>Delete?</th>
                     {% else %}
                     <th>No blats yet. Go blat someone. Or, better yet, get blatted.</th>
                     {% endif %}
@@ -1274,7 +1322,17 @@ VIEW_BLATS_TEMPLATE = """
                         {% else %}
                             {{ blat.flags }}
                         {% endif %}
-                        </td>
+                    </td>
+                    <td>
+                        <form action="{{ url_for('view_blats') }}" method="post">
+                            <input type="hidden" name="del_timestamp" id="del_timestamp" value="{{ blat.timestamp }}">
+                            <input type="hidden" name="del_sender" id="del_sender" value="{{ blat.sender }}">
+                            <input type="hidden" name="del_recipient" id="del_recipient" value="{{ blat.recipient }}">
+                            <button type="submit" class="emoji-button" title="DELETE">
+                            🗑️
+                            </button>
+                        </form>
+                    </td>
                 </tr>
                 {% else %}
                     <tr>
@@ -1529,14 +1587,14 @@ def profile():
 
     local_profile = get_local_profile()
     if (request.method == 'POST') and logged_in:
-        new_profile = {
-            'nickname': request.form.get('nickname', '').strip(),
-            'location': request.form.get('location', '').strip(),
-            'description': request.form.get('description', '').strip(),
-            'email': request.form.get('email', '').strip(),
-            'website': request.form.get('website', '').strip()
+        new_profile_data = {
+            'nickname': print_filter(request.form.get('nickname', '').strip()),
+            'location': print_filter(request.form.get('location', '').strip()),
+            'description': print_filter(request.form.get('description', '').strip()),
+            'email': print_filter(request.form.get('email', '').strip()),
+            'website': print_filter(request.form.get('website', '').strip())
         }
-        update_local_profile(new_profile)
+        update_local_profile(new_profile_data)
         logger.info("Local profile updated.")
         return redirect(url_for('profile'))
 
@@ -1691,13 +1749,31 @@ def view_thread(bleet_id):
     )
     return view_thread_html
 
-@app.route('/view_blats')
+@app.route('/view_blats', methods=['GET', 'POST'])
 def view_blats():
     if not is_logged_in():
         return redirect(url_for('login'))
 
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
+
+    # Prepare a delete if requested
+    del_timestamp, del_sender, del_recipient = request.form.get('del_timestamp'), request.form.get('del_sender'), request.form.get('del_recipient')
+    if del_timestamp: 
+        if del_sender == SITE_NAME:
+            conn.execute('DELETE FROM blats WHERE sender = ? AND timestamp = ?', (SITE_NAME, del_timestamp))
+        elif del_recipient == SITE_NAME:
+            conn.execute('DELETE FROM blats WHERE recipient = ? AND timestamp = ?', (SITE_NAME, del_timestamp))
+        else:
+            # Can't delete 
+            logger.warning(f"Could NOT delete blat #{del_timestamp}")
+            logger.warning(f"From: {del_sender}")
+            logger.warning(f"To: {del_recipient}")
+
+        conn.commit()
+        logger.info(f"Deleting blat: {del_timestamp}")
+        logger.info(f"From: {del_sender}")
+        logger.info(f"To: {del_recipient}")
 
     filter = request.args.get('filter', default=None, type=str)
     if filter:
@@ -1743,10 +1819,7 @@ def view_blats():
                     (SITE_NAME, '0')
                 ).fetchall()
 
-        conn.close()
-
-    else:
-        conn.close()
+    conn.close()
 
     subs = get_all_subscriptions()
     nickname_map = {sub['site']: sub['nickname'] for sub in subs}
@@ -1758,13 +1831,13 @@ def view_blats():
         row_dict = dict(row)  # make a mutable copy
 
         if row_dict['recipient'] == SITE_NAME:
-            row_dict['recipient'] = local_nickname
+            row_dict['recipient_nick'] = local_nickname
             row_dict['flags'] = 'Unread' if row_dict['flags'][-1] == '0' else 'Read'
         elif row_dict['recipient'] in nickname_map:
             row_dict['recipient_nick'] = nickname_map[row_dict['recipient']]
 
         if row_dict['sender'] == SITE_NAME:
-            row_dict['sender'] = local_nickname
+            row_dict['sender_nick'] = local_nickname
             if row_dict['flags'][-1]=='0':
                 if (filter and filter == 'outbox'): 
                     row_dict['flags'] = 'Retry'
@@ -2409,7 +2482,14 @@ if __name__ == '__main__':
     logger.info("Local Access: http://%s:%s", FLASK_HOST, FLASK_PORT)
     logger.info("Press Ctrl+C to stop.")
     try:
-        app.run(debug=False, host=FLASK_HOST, port=FLASK_PORT, threaded=True, use_reloader=False)
+        app.run(
+            debug=False, 
+            host=FLASK_HOST, 
+            port=FLASK_PORT, 
+            threaded=True, 
+            use_reloader=False,
+            request_handler=CustomRequestHandler
+        )
     except KeyboardInterrupt:
          logger.info("Ctrl+C received, shutting down...")
     except SystemExit as e:
