@@ -249,8 +249,8 @@ This is an experimental project. It’s built for resilience and independence. U
 
 - Tor Project (for the incredible onion routing platform)
 - Bitcoin project (for the BIP-0039 word list)
-- OpenAI (o3-mini-high greatly accelerated development)
+- OpenAI (o3-mini-high greatly accelerated development, RIP)
 - The Internet (for still being broken enough to inspire projects like this)
-- You, for resisting authoritarian despots, imperialism, oligarchs and warmongers.
+- You, for resisting authoritarian despots, imperialism, oligarchs and warmongers
   
 ---
