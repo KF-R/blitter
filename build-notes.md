@@ -1,8 +1,9 @@
 
-# Blitter Build instructions (PyInstaller Linux/Macos and Windows; Windows see note below):
+# Blitter Build instructions 
+### Using PyInstaller for Linux/Macos and Windows (_Windows see note below_)
 
 ```
-git clone https://github.com/KF-R
+git clone https://github.com/KF-R/blitter
 mv blitter blitter-build
 cd blitter-build/
 python3 -m venv venv-blitter-build
