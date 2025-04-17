@@ -100,7 +100,7 @@ python keygen.py --prefix abcd --key-dir keys --workers 4
 
 ### Keygen Command-Line Arguments
 
-- `--prefix`: Desired vanity prefix (max 4 Base32 characters). Leave empty for a random address.
+- `--prefix`: Desired vanity prefix (max 8 Base32 characters). Leave empty for a random address.
 - `--key-dir`: Parent directory to create the onion service directory (default: `keys`).
 - `--workers`: Number of worker processes to use (default: the number of CPU cores).
 
