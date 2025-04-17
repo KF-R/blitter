@@ -27,12 +27,16 @@ Run `blitter` from the command line so you can keep an eye on the feedback provi
 
 ### Main
 On Windows, swap the Linux/MacOS command:
+
 `pyinstaller --clean --add-data "static:static" --add-data "bip39_english.txt:." blitter.py`
+
 for:
+
 `pyinstaller --clean --add-data "static;static" --add-data "bip39_english.txt;." blitter.py`
 
 ### Keygen
 The Linux/MacOS command remains unchanged for Windows. i.e.
+
 `pyinstaller --clean --hidden-import=nacl.bindings --hidden-import=cffi --hidden-import=cffi.backend_ctypes keygen.py`
 
 ---
