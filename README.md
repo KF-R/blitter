@@ -24,7 +24,9 @@ Blitter is:
 - You can broadcast status updates or **_Bleets_**, which are available to anyone visiting your **Blitter** site.
 - Other users can subscribe to your feed to receive it aggregated into their own timeline.
 - You can subscribe to other **Blitter** feeds to aggregate them into your own timeline.
-- You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any **Blitter** user suscribed to your feed. 
+- You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any **Blitter** user suscribed to your feed.
+- No account - not even a username/password; just six memorable words to log in remotely from anywhere in the world
+- If you leave it running on your Linux, MacOS or Windows device, you can log in from any other Internet-connected device using the [tor browser](https://www.torproject.org/).
 
 ---
 
@@ -46,7 +48,13 @@ Blitter is:
 
 ## ⚙️ Install & Run
 
-### Requirements:
+### Quickstart
+
+For quickstart, check the [releases](https://github.com/KF-R/blitter/releases) to see if there's a prepared binary-based package for your platform.
+If so, check `quickstart.md` for the quickstart guide.
+
+
+### Requirements for full Python-dependent installation:
 
 - Python 3.8+
 - Tor with ControlPort enabled (e.g., `/etc/tor/torrc` must include):
@@ -66,6 +74,7 @@ pip install flask stem requests[socks] cryptography
 **Blitter**
 ```bash
 git clone https://github.com/KF-R/blitter
+cd blitter
 ```
 
 ## Key Generation
