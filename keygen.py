@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-APP_VERSION = '0.0.4'
+APP_VERSION = '0.0.5'
 """Pyinstaller:
 pyinstaller --hidden-import=_cffi_backend keygen.py
 """
@@ -176,6 +176,7 @@ def create_onion_service_files(key_dir='keys', prefix='', num_workers=None):
 
 # --- CLI ---
 if __name__ == "__main__":
+    multiprocessing.freeze_support() # This line is required for successfully Windows PyInstaller builds
     parser = argparse.ArgumentParser(
         description="Generate Tor v3 Onion Service keys with optional vanity prefix.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
