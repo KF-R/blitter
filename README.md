@@ -1,22 +1,21 @@
+# Blitter: A decentralised anti-fragile message network
+
 <img src="https://github.com/user-attachments/assets/be252f14-5e89-4dff-bb6b-6825c5dc12d5" width="128" height="128" align="left">
 
-### Blitter: A decentralised anti-fragile message network
-
 **Blitter** is a self-hosted, decentralised Tor-based microblogging platform where every user is their own server.
-<hr/>
 <p>
 Think of it as a federated Twitter in the dark—only you control your identity, your content, and who you follow. No account. No centralised servers. No ads. No cancellation. No manipulation. 
 </p>
 
+<hr>
+
 ## 🔍 What Is Blitter?
 
-Blitter is:
-
 - 🧱 A **minimalist microblog** engine. Anonymous and secure.
+- 🔒 **Anti-fragile** and **censorship-resistant** by design.
 - 🧅 **Tor-native**, hosting each user's feed as a v3 onion service.
 - 📡 **Federated**, with each instance pulling updates from subscribed peers.
-- 🔒 **Anti-fragile** and **censorship-resistant** by design.
-- 🧬 Self-contained in a **single Python file** for simplicity and deployability.
+- 🧬 Source code consists of a **single Python file** for simplicity, deployability and easy auditing.
 
 ## 🧑‍💻 Key concepts
 
@@ -26,17 +25,18 @@ Blitter is:
 - You can subscribe to other **Blitter** feeds to aggregate them into your own timeline.
 - You can also send **_Blats_** (direct private messages), which are end-to-end encrypted, to any **Blitter** user suscribed to your feed.
 - No account - not even a username/password; just six memorable words to log in remotely from anywhere in the world
-- If you leave it running on your Linux, MacOS or Windows device, you can log in from any other Internet-connected device using the [tor browser](https://www.torproject.org/).
+- If you leave it running on your Linux, MacOS or Windows device, you can log in from any other Internet-connected device using the [Tor browser](https://www.torproject.org/).
 
 ---
 
 ## 💡 How It Works
 
-1. You run **Blitter** and it spins up a Tor hidden service.
-2. Your updates (called **_Bleets_**) are broadcast as a text-based feed over tor, with its secure `.onion` addresses.
-3. You can subscribe to other **Blitter** sites (by onion address), and your node will fetch their feeds periodically.
-4. That’s it. You’re on your own dark microblog island, linking arms with others.
-5. As well as **_Bleets_**, you can send and recieve direct encryped messages called **_Blats_** with other **Blitter** users. 
+1. You run **Blitter** and it spins up a Tor hidden service with a unique _.onion_ address.
+2. You visit your own Blitter site using the [Tor browser](https://www.torproject.org/).
+3. You publish updates (called **_Bleets_**), which are visible to any visitor to your **Blitter** site using its _.onion_ address.
+4. You can subscribe to other **Blitter** sites (by _.onion_ address), and your node will fetch their feeds periodically and integrate them into your site's timeline.
+5. As well as **_Bleets_**, you can securely send and recieve direct **encrypted** messages called **_Blats_** with other **Blitter** users.
+6. That’s it. You’re on your own dark microblog island, linking arms with others.
 
 ## Technical Details
 
@@ -46,32 +46,23 @@ Blitter is:
 
 ---
 
-## ⚙️ Install & Run
+# Installing **_Blitter_**
 
-### Quickstart
+## Either Quickstart:
 
 For quickstart, check the [releases](https://github.com/KF-R/blitter/releases) to see if there's a prepared binary-based package for your platform.
-If so, check `quickstart.md` for the quickstart guide.
+If so, check `quickstart.md` for the quickstart guide.  Thea application executables are fully portable and do not require a full installation process. 
+In other words, unzip and run. _Remember to run the included **keygen** once before running **blitter**_.
 
+## Or opt for full manual Python-based Installation _(requires Python 3.8+)_:
 
-### Requirements for full Python-dependent installation:
-
-- Python 3.8+
-- Tor with ControlPort enabled (e.g., `/etc/tor/torrc` must include):
-  ```
-  ControlPort 9051
-  CookieAuthentication 1
-  ```
-- A valid tor service directory and ed25519 secret key file (see below)
-
-### Installation:
-
-**Requirements:**
+### Install Requirements
 ```bash
 sudo apt install tor
 pip install flask stem requests[socks] cryptography
 ```
-**Blitter**
+
+### Install **Blitter**
 ```bash
 git clone https://github.com/KF-R/blitter
 cd blitter
@@ -79,39 +70,30 @@ cd blitter
 
 ## Key Generation
 
-Before you can launch **Blitter** you'll need a key. You can just run the included keygen or you can try to generate a custom vanity address.
+Before you can launch **Blitter** you'll need to generate a key. You can just run the included **keygen** or you can try to generate a custom vanity address.
 Note that a dedicated low-level tool like [mkp224o](https://github.com/cathugger/mkp224o) will generate keys _much_ faster, making slightly longer vanity prefixes viable. 
 
-## Keygen Requirements
+### Manually installed _Keygen_ Requirements
 
-Before you can use the included keygen, you'll need to install PyNaCl via pip:
+Before you can use the included **keygen**, if it was manually installed, you'll also need to install PyNaCl via pip. This step is unnecessary if using a _Quickstart_ release:
 
-```bash
+```
 pip install pynacl
 ```
 
-## Keygen Usage
+### _Keygen_ Usage
 
-Run the script from the command line. Example:
+Run the script from the command line. Either run `keygen` or `python keygen.py` depending on whether you are using a quickstart release or a manual Python installation. 
+For a custom vanity prefix, use the `--prefix` command-line argument, e.g. `keygen --prefix noob` or `python keygen.py --prefix noob`.
+If no prefix is specified, your _.onion_ address will be randomly (and immediately) generated.
 
-```bash
-python keygen.py --prefix abcd --key-dir keys --workers 4
-```
-
-### Keygen Command-Line Arguments
+### All _Keygen_ Command-Line Arguments
 
 - `--prefix`: Desired vanity prefix (max 8 Base32 characters). Leave empty for a random address.
 - `--key-dir`: Parent directory to create the onion service directory (default: `keys`).
 - `--workers`: Number of worker processes to use (default: the number of CPU cores).
 
-
-Most new **Blitter** users may want to simply generate an address without a custom "vanity" prefix, which should be near-instantaneous:
-
-```bash
-python keygen.py
-```
-
-### How the Keygen works
+### How the _Keygen_ works
 
 1. **Key Generation:** Each worker process generates Ed25519 key pairs.
 2. **Address Calculation:** Computes the Tor v3 onion address using the public key.
@@ -121,27 +103,23 @@ python keygen.py
 
 ### Alternative keygen notes
 
-If you use an alternative ed25519 (tor v3) keygen, like the aforementioned mkp224o for example, simply drop the resulting `xxx...xxx.onion` directory containing the key files in `<your blitter directory>/keys/`.
+If you use an alternative ed25519 (tor v3) keygen, like the aforementioned [mkp224o](https://github.com/cathugger/mkp224o) for example, simply drop the resulting `xxx...xxx.onion` directory containing the key files in `<your blitter directory>/keys/`.
 
 _Note that if multiple key directories are found, the first found will be used, so manage your keys directory appropriately._
 
 ---
 
-## Launching **Blitter**:
+# Launching **Blitter**:
 
-```bash
-python blitter.py
-```
+Either run the **Blitter** executable if using a release, or run `python blitter.py` if using a manual installation.
 
-On first run:
 - **A Tor onion service key will be required (see above).**
-- You’ll get a passphrase derived from your key and a local secret word.
-- Visit `http://127.0.0.1:5000` and login with that passphrase.
-
-Your **Blitter** site will be available (using the [tor browser](https://www.torproject.org/)) at something like:
+- You’ll get a six word passphrase derived from your key and a local secret word.
+- Your **Blitter** site will be available (using the [tor browser](https://www.torproject.org/)) at something like:
 ```
 http://bleetmsropwd4542scsvoep3odcqof5hxgvt42heqw5zbsjxatcmxnyd.onion
 ```
+- Use the six word passphrase to log in and start broadcasting your **_Bleets_**.
 
 ---
 
@@ -192,13 +170,12 @@ Add other **Blitter** `.onion` sites as subscriptions:
 - **Blitter** fetches `/about` and `/feed` over Tor.
 - **_Bleets_** are verified, parsed, and stored locally.
 - Feeds are merged in the UI, sorted by timestamp.
-- Send and receive direct secure private **_Blats_**
 
 ---
 
 ## 🧠 Features & Design Highlights
 
-- 🔑 Passphrase-based login derived from secret Tor key + BIP-39.
+- 🔑 Six word passphrase-based login derived from the same unique secret Tor key that unlocks the site's _.onion_ address.
 - 🔐 End-to-end encryption for private messages.
 - 🔁 Fully offline-capable (local-only viewing possible).
 - 🔂 Threaded replies.
@@ -212,6 +189,7 @@ Add other **Blitter** `.onion` sites as subscriptions:
 ## 🚧 Roadmap Ideas
 
 - Blitter tray: an optional universal inbox for guests
+- Image support
 - Optionally automatically sending a **_Bleet_** when adding a **Blitter** subscription 
 - Custom backgrounds and avatar support
 - UI improvements, themes, & customisation
@@ -251,6 +229,13 @@ This is an experimental project. It’s built for resilience and independence. U
 - Bitcoin project (for the BIP-0039 word list)
 - OpenAI (o3-mini-high greatly accelerated development, RIP)
 - The Internet (for still being broken enough to inspire projects like this)
-- You, for resisting authoritarian despots, imperialism, oligarchs and warmongers
+- You, for resisting authoritarianism, imperialism, oligarchs and warmongers
   
 ---
+
+### Note:
+_If Blitter fails to connect to Tor, ensure that your `/etc/tor/torrc` config file contains these lines:_
+```
+ControlPort 9051
+CookieAuthentication 1
+```
