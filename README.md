@@ -51,7 +51,7 @@ Think of it as a federated Twitter in the dark—only you control your identity,
 ## Either Quickstart:
 
 For quickstart, check the [releases](https://github.com/KF-R/blitter/releases) to see if there's a prepared binary-based package for your platform.
-If so, check `quickstart.md` for the quickstart guide.  Thea application executables are fully portable and do not require a full installation process. 
+If so, check `quickstart.md` for the quickstart guide.  The application executables are fully portable and do not require a full installation process. 
 In other words, unzip and run. _Remember to run the included **keygen** once before running **blitter**_.
 
 ## Or opt for full manual Python-based Installation _(requires Python 3.8+)_:
