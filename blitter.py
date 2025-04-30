@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.4.2'
+APP_VERSION = '0.4.3'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 BLITTER_HOME_URL = 'http://blittertm7rhmjqyo52sd5xpxt473f7dphffnjltmr4mbk4knxtalmid.onion/'
@@ -2182,11 +2182,16 @@ def send_blat():
 def add_subscription():
     if not is_logged_in():
         abort(403)
+
+    # Trim and normalize input
     onion_input_raw = request.form.get('onion_address', '').strip()
-    normalized_onion, dir_name = normalize_onion_address(onion_input_raw)
-    if not is_valid_onion_address(normalized_onion):
+    onion_input, dir_name = normalize_onion_address(onion_input_raw)
+
+    # Validate onion format
+    if not is_valid_onion_address(onion_input):
         logger.error("Add subscription failed: Invalid onion address '%s'", onion_input_raw)
         return redirect(url_for('index'))
+
     if dir_name == SITE_NAME:
         logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
         return redirect(url_for('index'))
@@ -2200,14 +2205,15 @@ def add_subscription():
         r.raise_for_status()
         json_data = r.json()
 
-        if json_data and json_data.get("site", "").lower() != onion_input:
+        if json_data.get("site", "").lower() != onion_input:
             logger.warning("/about 'site' field does not match expected onion: %s vs %s", json_data.get("site"), onion_input)
 
         # Keep only allowed keys and sanitize
         allowed_keys = ['nickname', 'location', 'description', 'email', 'website', 'pubkey']
         about_info = {k: print_filter(str(v)) for k, v in json_data.items() if k in allowed_keys}
-
+        
         logger.info("Successfully fetched /about info for %s: %s", onion_input, about_info)
+
     except requests.exceptions.Timeout:
         logger.error("Error fetching /about from %s: Timeout after %s seconds", onion_input, FETCH_TIMEOUT)
     except requests.exceptions.RequestException as e:
@@ -2219,6 +2225,7 @@ def add_subscription():
     logger.info("Subscription profile for %s upserted into database.", onion_input)
     logger.info("Submitting initial fetch task for new subscription %s", dir_name)
     fetch_executor.submit(fetch_and_process_feed, dir_name)
+
     return redirect(url_for('index'))
 
 def fetch_and_process_feed(site):
