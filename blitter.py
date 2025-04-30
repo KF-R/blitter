@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.4.1'
+APP_VERSION = '0.4.2'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
 BLITTER_HOME_URL = 'http://blittertm7rhmjqyo52sd5xpxt473f7dphffnjltmr4mbk4knxtalmid.onion/'
@@ -559,9 +559,16 @@ def bmd2html(bmd_string):
     return '\n'.join(html_lines)
 
 def normalize_onion_address(onion_input):
-    onion_input = onion_input.strip().lower().replace("http://", "").replace("https://", "")
-    if onion_input.endswith('/'):
-        onion_input = onion_input[:-1]
+    # 1. Trim whitespace
+    onion_input = onion_input.strip()
+    # 2. Remove URL scheme if present
+    if onion_input.lower().startswith('http://'):
+        onion_input = onion_input[len('http://'):]
+    elif onion_input.lower().startswith('https://'):
+        onion_input = onion_input[len('https://'):]
+    # 3. Lowercase and strip any trailing slashes
+    onion_input = onion_input.lower().rstrip('/')
+    # 4. Extract the 56-char name, append .onion if missing
     if onion_input.endswith('.onion'):
         dir_name = onion_input[:-6]
     else:
@@ -1172,14 +1179,16 @@ INDEX_TEMPLATE = """
     </div>
 
     <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:440px;">
-      <form method="post" action="{{ url_for('add_subscription') }}">
-        <label for="onion_address">Enter .onion address</label>
+      <form method="post" action="{{ url_for('add_subscription') }}" onsubmit="this.onion_address.value = this.onion_address.value.trim();">        <label for="onion_address">Enter .onion address</label>
         <label for="onion_address" style="color:yellow; font-size: 0.5em;">For example:</label> 
         <br>
         <label for="onion_address" style="color:yellow; font-size: 0.75em">{{ BLITTER_HOME_URL }}</label> 
         <br><br>
-
-        <input type="text" name="onion_address" id="onion_address" required pattern="^(https?:\\/\\/)?[a-z2-7]{56}(?:\\.onion)?\\/?$" title="Enter a valid v3 Onion address (56 characters, optionally starting with http:// or https://, optionally ending with .onion, and optionally a trailing slash)" style="width: 420px;">
+        <input
+          type="text" name="onion_address" id="onion_address" required
+          pattern="^\\s*(?:https?://)?[a-z2-7]{56}(?:\\.onion)?/?\\s*$"
+          title="Enter a valid v3 Onion address (56 chars base32, optional http://, optional .onion, optional slash)"
+          style="width: 420px;">
         <br><br>
         <input type="submit" value="Add Subscription">
         <button type="button" onclick="document.getElementById('add-subscription-modal').style.display='none';">Cancel</button>
@@ -2173,12 +2182,10 @@ def send_blat():
 def add_subscription():
     if not is_logged_in():
         abort(403)
-    onion_input_raw = request.form.get('onion_address', '')
-    onion_input, dir_name = normalize_onion_address(onion_input_raw)
-    if not onion_input:
-        return redirect(url_for('index'))
-    if not (len(dir_name) == 56 and all(c in string.ascii_lowercase + string.digits + '234567' for c in dir_name)):
-        logger.error("Add subscription failed: Invalid address format for %s", onion_input)
+    onion_input_raw = request.form.get('onion_address', '').strip()
+    normalized_onion, dir_name = normalize_onion_address(onion_input_raw)
+    if not is_valid_onion_address(normalized_onion):
+        logger.error("Add subscription failed: Invalid onion address '%s'", onion_input_raw)
         return redirect(url_for('index'))
     if dir_name == SITE_NAME:
         logger.error("Add subscription failed: Cannot subscribe to own site %s", onion_input)
