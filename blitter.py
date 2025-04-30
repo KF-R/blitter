@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-APP_VERSION = '0.4.0'
+APP_VERSION = '0.4.1'
 PROTOCOL_VERSION = "0002"  # Version constants defined before imports for visibility
 REQUIREMENTS_INSTALL_STRING = "pip install stem Flask requests[socks] cryptography"
+BLITTER_HOME_URL = 'http://blittertm7rhmjqyo52sd5xpxt473f7dphffnjltmr4mbk4knxtalmid.onion/'
 import os
 import json
 import time
@@ -24,6 +25,10 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives import hashes, serialization
 import logging
 import argparse
+
+# --- Windows compatibility ---
+from colorama import init
+init()  # Enables ANSI escape codes on Windows
 
 # --- Logging Configuration ---
 class CustomRequestHandler(WSGIRequestHandler):
@@ -487,19 +492,71 @@ def create_bleet_string(content, reply_id=NULL_REPLY_ADDRESS):
 def bmd2html(bmd_string):
     if not isinstance(bmd_string, str):
         return ""
-    html_string = escape(bmd_string)
-    def replace_link(match):
-        text = match.group(1)
-        url = match.group(2)
-        if not url.startswith(('http://', 'https://')):
-            url = 'http://' + url
-        safe_url = escape(url)
-        return f'<a href="{safe_url}" target="_blank">{escape(text)}</a>'
-    html_string = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, html_string)
-    html_string = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', html_string)
-    html_string = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', html_string)
-    html_string = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', html_string)
-    return html_string
+
+    emoji_map = {
+        'smile': '😄', 'laughing': '😆', 'blush': '😊', 'smirk': '😏', 'heart': '❤️',
+        'thumbsup': '👍', 'thumbsdown': '👎', 'sob': '😭', 'joy': '😂', 'fire': '🔥',
+        'rocket': '🚀', '100': '💯', 'clap': '👏', 'thinking': '🤔', 'wave': '👋',
+        'scream': '😱', 'eyes': '👀', 'check': '✅', 'x': '❌', 'star': '⭐'
+    }
+
+    def replace_emoji_shortcodes(text):
+        return re.sub(r':([a-z0-9_+\-]+):', lambda m: emoji_map.get(m.group(1), m.group(0)), text)
+
+    lines = bmd_string.splitlines()
+    html_lines = []
+    in_blockquote = False
+    in_codeblock = False
+
+    def esc(text):
+        return html.escape(text, quote=True)
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped == '```':
+            html_lines.append('</pre>' if in_codeblock else '<pre>')
+            in_codeblock = not in_codeblock
+            continue
+
+        if in_codeblock:
+            html_lines.append(esc(line))
+            continue
+
+        if stripped.startswith('>'):
+            if not in_blockquote:
+                html_lines.append('<blockquote>')
+                in_blockquote = True
+            html_lines.append(esc(stripped[1:].lstrip()))
+            continue
+        elif in_blockquote:
+            html_lines.append('</blockquote>')
+            in_blockquote = False
+
+        # Escape HTML and process emoji shortcodes
+        escaped = replace_emoji_shortcodes(esc(line))
+
+        # Images
+        escaped = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1" style="max-width:100%;">', escaped)
+
+        # Links
+        escaped = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', lambda m: f'<a href="{esc(m.group(2))}" target="_blank">{esc(m.group(1))}</a>', escaped)
+        escaped = re.sub(r'(?<!["\'=])\b(https?://[^\s<>]+)', r'<a href="\1" target="_blank">\1</a>', escaped)
+
+        # Formatting
+        escaped = re.sub(r'\*\*\*([^\*]+)\*\*\*', r'<strong><em>\1</em></strong>', escaped)
+        escaped = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', escaped)
+        escaped = re.sub(r'\*([^\*]+)\*', r'<em>\1</em>', escaped)
+        escaped = re.sub(r'`([^`]+)`', r'<code>\1</code>', escaped)
+
+        html_lines.append(f'<p>{escaped}</p>')
+
+    if in_blockquote:
+        html_lines.append('</blockquote>')
+    if in_codeblock:
+        html_lines.append('</pre>')
+
+    return '\n'.join(html_lines)
 
 def normalize_onion_address(onion_input):
     onion_input = onion_input.strip().lower().replace("http://", "").replace("https://", "")
@@ -775,6 +832,42 @@ def cleanup_tor_service():
 
 # --- Template Strings ---
 
+BMD_HELP_HTML = """
+        <div class="bmd-help">
+        <h3>✨ Basic Formatting</h3>
+        <ul>
+            <li><em>Italic</em> → <code>*Italic*</code></li>
+            <li><strong>Bold</strong> → <code>**Bold**</code></li>
+            <li><strong><em>Bold &amp; Italic</em></strong> → <code>***Bold &amp; Italic***</code></li>
+            <li><code>Inline code</code> → <code>`Inline code`</code></li>
+        </ul>
+        <hr>
+        <h3>🔗 Links and Images</h3>
+        <ul>
+            <li><code>[Blitter Project]({{ BLITTER_HOME_URL }})</code> → <br> <a href="{{ BLITTER_HOME_URL }}" target="_blank">Blitter Project</a></li>
+            <li><code>![Example Image]({{ url_for('static', filename='logo_128.png') }})</code> → <br> <img src="{{ url_for('static', filename='logo_128.png') }}" alt="Example Image" style="width:16px;height:16px;"></li>
+        </ul>
+        <hr>
+        <h3>💬 Quotes and Blocks</h3>
+        <p>Start lines with <code>&gt;</code> to create blockquotes.</p>
+        <blockquote>This is a quote</blockquote>
+        <p>Wrap code blocks with triple backticks (<code>```</code>)</p>
+        <pre>Example code block</pre>
+        <hr>
+        <h3>😀 Emoji Shortcodes</h3>
+        <p>Use shortcodes like <code>:smile:</code>, <code>:fire:</code>, <code>:thumbsup:</code>, <code>:rocket:</code></p>
+        <p>Examples: 😄 🔥 👍 🚀</p>
+        <hr>
+        <h3>🚫 Things to Avoid</h3>
+        <ul>
+            <li>Don't use newlines (<code>Enter</code>) — they will be removed.</li>
+            <li>Don't use the pipe character <code>|</code> — it's reserved for system use.</li>
+        </ul>
+        <hr>
+        <p><em>Enjoy bleeting securely and expressively!</em></p>
+        </div>
+"""
+
 CSS_BASE = """
     <link rel="icon" type="image/x-icon" href="/favicon.ico?v=blitter-01">
     <style>
@@ -856,6 +949,35 @@ CSS_BASE = """
         }
             .emoji-button:active {
             transform: translateY(2px);
+        }
+        #bmd-help-popup {
+            position: fixed;
+            top: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            max-width: 90vw;
+            background: #2a2a2a;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 16px;
+            z-index: 9999;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            color: #eee;
+            font-size: 0.8em;
+        }
+        #bmd-help-popup .close-btn {
+            position: absolute;
+            top: 4px;
+            right: 6px;
+            background: none;
+            border: none;
+            color: #aaa;
+            font-size: 1.2em;
+            cursor: pointer;
+        }
+        #bmd-help-popup .close-btn:hover {
+            color: #fff;
         }
     </style>
 """
@@ -1014,13 +1136,17 @@ INDEX_TEMPLATE = """
             <hr>
              <div id="status-message"></div>
             {% if logged_in %}
-            <form method="post" action="{{ url_for('post') }}">
-                <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
-                <input type="submit" value="Bleet" style="margin: 5px;">
-                <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
-                <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
-            </form>
-            <hr>
+                <form method="post" action="{{ url_for('post') }}">
+                    <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
+                    <input type="submit" value="Bleet" style="margin: 5px;">
+                    <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
+                    <button type="button" style="float:right;" onclick="toggleHelp()">❔ Help</button>
+                </form>
+                <hr>
+                <div id="bmd-help-popup" style="display:none;">
+                <button class="close-btn" onclick="this.parentElement.style.display='none'">✖</button>
+                {{ BMD_HELP_HTML | safe }}
+                </div>
             {% endif %}
             {% for post in user_feed %}
             <div class="post-box {% if post.site == site_name %}own-post-highlight{% endif %}">
@@ -1047,7 +1173,12 @@ INDEX_TEMPLATE = """
 
     <div id="add-subscription-modal" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, 0); background-color:#333; padding:20px; border: 1px solid #555; border-radius:5px; z-index:1000; width:440px;">
       <form method="post" action="{{ url_for('add_subscription') }}">
-        <label for="onion_address" style="color:#eee;">Enter .onion address:</label><br><br>
+        <label for="onion_address">Enter .onion address</label>
+        <label for="onion_address" style="color:yellow; font-size: 0.5em;">For example:</label> 
+        <br>
+        <label for="onion_address" style="color:yellow; font-size: 0.75em">{{ BLITTER_HOME_URL }}</label> 
+        <br><br>
+
         <input type="text" name="onion_address" id="onion_address" required pattern="^(https?:\\/\\/)?[a-z2-7]{56}(?:\\.onion)?\\/?$" title="Enter a valid v3 Onion address (56 characters, optionally starting with http:// or https://, optionally ending with .onion, and optionally a trailing slash)" style="width: 420px;">
         <br><br>
         <input type="submit" value="Add Subscription">
@@ -1154,6 +1285,11 @@ INDEX_TEMPLATE = """
       document.addEventListener("DOMContentLoaded", function () {
           bindRemoveLinks();
       });
+
+    function toggleHelp() {
+        const help = document.getElementById("bmd-help-popup");
+        help.style.display = (help.style.display === "none" || help.style.display === "") ? "block" : "none";
+    }
 
     </script>
 
@@ -1413,14 +1549,18 @@ VIEW_THREAD_TEMPLATE = """
             {{ thread_section|safe }}
             <hr>
             {% if logged_in %}
-            <form method="post" action="{{ url_for('post') }}">
-                <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
-                <input type="text" name="reply_id" value="{{ selected_post.site }}:{{ selected_post.timestamp }}" readonly title="You are replying to the selected bleet." size="73">
-                <input type="submit" value="Post" style="margin: 5px;">
-                <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
-                <span style="font-size: 0.8em; margin-left: 10px;"> Markdown: *italic*, **bold**, [link](url) </span>
-            </form>
-            <hr>
+                <form method="post" action="{{ url_for('post') }}">
+                    <textarea id="content" name="content" rows="3" placeholder="What's happening? (Max {{ MAX_MSG_LENGTH }} bytes)" maxlength="{{ MAX_MSG_LENGTH * 2 }}" required></textarea><br>
+                    <input type="text" name="reply_id" value="{{ selected_post.site }}:{{ selected_post.timestamp }}" readonly title="You are replying to the selected bleet." size="73">
+                    <input type="submit" value="Post" style="margin: 5px;">
+                    <span id="byte-count" style="font-size: 0.8em; margin-left: 10px;">0 / {{ MAX_MSG_LENGTH }} bytes</span>
+                    <button type="button" style="float:right;" onclick="toggleHelp()">❔ Help</button>
+                </form>
+                <hr>
+                <div id="bmd-help-popup" style="display:none;">
+                    <button class="close-btn" onclick="this.parentElement.style.display='none'">✖</button>
+                    {{ BMD_HELP_HTML | safe }}
+                </div>
             {% endif %}
         </div>
     </div>
@@ -1438,6 +1578,10 @@ VIEW_THREAD_TEMPLATE = """
              elem.style.display = 'none';
              if (toggleLink) toggleLink.textContent = '[+] Expand replies';
         }
+    }
+    function toggleHelp() {
+        const help = document.getElementById("bmd-help-popup");
+        help.style.display = (help.style.display === "none" || help.style.display === "") ? "block" : "none";
     }
     </script>
 {% if logged_in %}
@@ -1530,7 +1674,9 @@ def index():
         onion_address=onion_address,
         profile=common['profile'],
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
-        bmd2html=bmd2html
+        bmd2html=bmd2html,
+        BLITTER_HOME_URL=BLITTER_HOME_URL,
+        BMD_HELP_HTML=render_template_string(BMD_HELP_HTML, BLITTER_HOME_URL=BLITTER_HOME_URL)
     )
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -1738,6 +1884,7 @@ def view_thread(bleet_id):
         profile=common['profile'],
         MAX_MSG_LENGTH=MAX_MSG_LENGTH,
         bmd2html=bmd2html,
+        BMD_HELP_HTML=render_template_string(BMD_HELP_HTML, BLITTER_HOME_URL=BLITTER_HOME_URL),
         null_reply_address=NULL_REPLY_ADDRESS
     )
     return view_thread_html
